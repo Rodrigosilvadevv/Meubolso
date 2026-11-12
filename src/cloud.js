@@ -1,175 +1,253 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { createClient } from '@supabase/supabase-js'
-import { App as CapApp } from '@capacitor/app'
-import { authStorage, isNative, makeOauth, makeEnablePush, makeRemovePushToken } from './nativeAuth.js'
+import { useEffect, useState } from 'react'
+import { sb, oauth, signUpPhone, signInPhone, enablePush, isPlus, parseRef } from './cloud'
+import { isNative } from './nativeAuth.js'
+import { getPrices } from './purchases'
+import { Indique } from './Extras'
 
-// Pega só a primeira palavra e remove um "NOME=" no começo.
-// Protege contra texto extra colado no secret ou no .env (ex.: "eyJ... VITE_VAPID_PUBLIC_KEY=...").
-const clean = v => String(v || '').trim().split(/\s+/)[0].replace(/^[A-Z_]+=/, '')
+const Policy = () => <a href="/privacidade.html" target="_blank" rel="noreferrer">Política de Privacidade e LGPD</a>
+const Eula = () => <a href="https://www.apple.com/legal/internet-services/itunes/dev/stdeula/" target="_blank" rel="noreferrer">Termos de Uso</a>
 
-// Sessão salva no aparelho (no iOS usa Preferences, que não é apagado pelo sistema).
-// Só o token fica guardado, nunca a senha. O usuário só sai ao tocar em "Sair".
-export const sb = createClient(clean(import.meta.env.VITE_SUPABASE_URL), clean(import.meta.env.VITE_SUPABASE_ANON_KEY), {
-  auth: {
-    storage: isNative ? authStorage : window.localStorage,
-    persistSession: true,
-    autoRefreshToken: true,
-    detectSessionInUrl: !isNative,
-    storageKey: 'bolso:auth',
-  },
-})
+export function Auth() {
+  const [mode, setMode] = useState('in'), [f, setF] = useState({ name: '', tel: '', pass: '' })
+  const [ok, setOk] = useState(false), [err, setErr] = useState(''), [busy, setBusy] = useState(false)
+  const [code, setCode] = useState('')
+  const ref = localStorage.getItem('bolso:ref')
+  const need = () => ok || (setErr('Aceite a Política de Privacidade para continuar.'), false)
+  const saveCode = () => { const c = parseRef(code); if (c) localStorage.setItem('bolso:ref', c) }
 
-// No app nativo, renova o token só enquanto o app está aberto
-if (isNative) {
-  sb.auth.startAutoRefresh()
-  CapApp.addListener('appStateChange', ({ isActive }) => {
-    if (isActive) sb.auth.startAutoRefresh()
-    else sb.auth.stopAutoRefresh()
-  })
-}
-
-const q = new URLSearchParams(location.search)
-if (q.get('ref')) localStorage.setItem('bolso:ref', q.get('ref'))
-
-const now = () => new Date()
-export const active = p => !!p && ((p.trial_until && new Date(p.trial_until) > now()) || (p.plan !== 'none' && (!p.plan_until || new Date(p.plan_until) > now())))
-export const isPlus = p => !!p && p.plan === 'plus' && (!p.plan_until || new Date(p.plan_until) > now())
-
-// Nível do usuário: 'plus' | 'premium' | 'free' (mês grátis ou sem plano pago)
-export const tierOf = p => isPlus(p) ? 'plus' : (p && p.plan === 'premium' && (!p.plan_until || new Date(p.plan_until) > now())) ? 'premium' : 'free'
-
-// Normaliza o telefone: só dígitos, sem zeros à esquerda e sem o 55 do Brasil.
-const normTel = t => {
-  let d = t.replace(/\D/g, '').replace(/^0+/, '')
-  if (d.length > 11 && d.startsWith('55')) d = d.slice(2)
-  return d
-}
-const fakeEmail = tel => `${normTel(tel)}@tel.meubolso.app`
-
-// Google/Apple: login nativo no iOS (signInWithIdToken) e OAuth normal no navegador
-export const oauth = makeOauth(sb)
-
-export const signUpPhone = async (name, tel, pass) => {
-  const r = await sb.auth.signUp({ email: fakeEmail(tel), password: pass, options: { data: { name, phone: tel } } })
-  // Sem sessão e sem erro = o Supabase ainda exige confirmação de e-mail (o e-mail é falso e nunca chega).
-  if (!r.error && !r.data.session) return { ...r, error: { message: 'EMAIL_CONFIRM_ON' } }
-  return r
-}
-export const signInPhone = (tel, pass) => sb.auth.signInWithPassword({ email: fakeEmail(tel), password: pass })
-
-const enableNativePush = makeEnablePush(sb)
-const removeNativePushToken = makeRemovePushToken(sb)
-
-export function useCloud() {
-  const [session, setSession] = useState(undefined)
-  const [profile, setProfile] = useState(null)
-  const [loadedFor, setLoadedFor] = useState(null)
-  const [profileErr, setProfileErr] = useState('')
-  const load = useCallback(async sess => {
-    if (!sess) { setProfile(null); setLoadedFor(null); return }
-    const md = sess.user.user_metadata || {}
-    const { data, error } = await sb.rpc('bolso_ensure_profile', { p_name: md.name || md.full_name || 'Você', p_ref: localStorage.getItem('bolso:ref') })
-    setProfileErr(error ? error.message : '')
-    setProfile(data || null); setLoadedFor(sess.user.id)
-  }, [])
-  useEffect(() => {
-    sb.auth.getSession().then(({ data }) => { setSession(data.session); load(data.session) })
-    const { data: sub } = sb.auth.onAuthStateChange((_e, sess) => { setSession(sess); setTimeout(() => load(sess), 0) })
-    return () => sub.subscription.unsubscribe()
-  }, [load])
-  const status = session === undefined || (session && loadedFor !== session.user.id) ? 'loading' : !session ? 'out' : active(profile) ? 'in' : 'locked'
-
-  // iOS: a cada abertura com o usuário logado, registra o aparelho para notificações
-  // (se a permissão ainda não foi pedida, o iOS mostra o pedido; se negada, ignora)
-  useEffect(() => {
-    if (isNative && session?.user) enableNativePush(session.user).catch(() => {})
-  }, [session?.user?.id])
-
-  const leave = async () => {
-    try { await removeNativePushToken(session?.user) } catch {}
-    try { await sb.auth.signOut() } catch {}
-    localStorage.removeItem('bolso:v1')
-    location.reload()
+  const social = async provider => {
+    if (!need()) return
+    setErr(''); setBusy(true)
+    saveCode()
+    const { error, cancelled } = await oauth(provider)
+    setBusy(false)
+    if (error && !cancelled) setErr(`Não foi possível entrar: ${error.message || error}`)
   }
-  return { status, user: session?.user, profile, profileErr, refresh: () => load(session), logout: leave }
+
+  const go = async e => {
+    e.preventDefault(); setErr('')
+    if (mode === 'up' && !need()) return
+    if (mode === 'up' && !f.name.trim()) return setErr('Diga seu nome.')
+    if (f.tel.replace(/\D/g, '').length < 10) return setErr('Digite o telefone com DDD.')
+    if (f.pass.length < 8) return setErr('A senha precisa ter 8 caracteres ou mais.')
+    setBusy(true)
+    if (mode === 'up') saveCode()
+    const { error } = mode === 'up' ? await signUpPhone(f.name.trim(), f.tel, f.pass) : await signInPhone(f.tel, f.pass)
+    setBusy(false)
+    if (error) {
+      const msg = error.message || ''
+      setErr(
+        /EMAIL_CONFIRM_ON|not confirmed/i.test(msg) ? 'Erro de configuração: a confirmação de e-mail está ligada no Supabase (Authentication → Providers → Email → Confirm email).'
+        : /invalid login/i.test(msg) ? 'Telefone ou senha incorretos.'
+        : /registered/i.test(msg) ? 'Esse telefone já tem conta. Entre com a senha.'
+        : /rate limit|too many/i.test(msg) ? 'Muitas tentativas. Espere alguns minutos.'
+        : `Não foi possível entrar: ${msg}`
+      )
+    }
+  }
+  return (
+    <main className="login">
+      <section className="hero">
+        <div className="logo"><i />Meu bolso</div>
+        <h2>Para fazer o dinheiro durar até o fim do mês.</h2>
+        <p>Feito para quem tem salário apertado ou renda que muda todo dia. Não pedimos Open Finance nem acesso ao seu banco: você anota só o que quiser.</p>
+        <div className="orb" aria-hidden="true" />
+      </section>
+      <section className="box">
+        <div className="seg">{[['in', 'Entrar'], ['up', 'Criar conta']].map(([k, l]) => <button key={k} className={mode === k ? 'on' : ''} onClick={() => setMode(k)}>{l}</button>)}</div>
+        {ref && <p className="good">Você veio por indicação: 30 dias grátis ao criar a conta.</p>}
+        {!ref && mode === 'up' && <input placeholder="Código ou link de indicação (opcional)" value={code} onChange={e => setCode(e.target.value)} />}
+        <button className="ghost" disabled={busy} onClick={() => social('apple')}>Continuar com Apple</button>
+        <p className="muted">ou com telefone e senha</p>
+        <form className="form" onSubmit={go}>
+          {mode === 'up' && <input placeholder="Seu nome" autoComplete="name" value={f.name} onChange={e => setF({ ...f, name: e.target.value })} />}
+          <input type="tel" inputMode="tel" autoComplete="tel" placeholder="Telefone com DDD" value={f.tel} onChange={e => setF({ ...f, tel: e.target.value })} />
+          <input type="password" autoComplete={mode === 'up' ? 'new-password' : 'current-password'} placeholder="Senha (8 ou mais caracteres)" value={f.pass} onChange={e => setF({ ...f, pass: e.target.value })} />
+          <label className="chk"><input type="checkbox" checked={ok} onChange={e => setOk(e.target.checked)} />Li e aceito a <Policy /></label>
+          <p className="err" role="alert">{err}</p>
+          <button className="cta" disabled={busy}>{mode === 'up' ? 'Criar conta' : 'Entrar'}</button>
+        </form>
+      </section>
+    </main>
+  )
 }
 
-// Sincroniza o estado do app com o Supabase.
-// Regras: nunca grava antes de ler com sucesso (evita apagar dados do servidor), grava 1,2 s depois
-// de cada mudança, tenta de novo se falhar e salva ao fechar o app ou mandá-lo para o fundo.
-export function useSync(s, setS, on, user, profile) {
-  const ready = useRef(false), skip = useRef(false), dirty = useRef(false)
-  const latest = useRef(s), timer = useRef(0)
-  latest.current = s
+export function Paywall({ cloud }) {
+  const p = cloud.profile
+  const [prices, setPrices] = useState({})
+  const [busy, setBusy] = useState(''), [msg, setMsg] = useState('')
+  const [code, setCode] = useState(''), [showRef, setShowRef] = useState(false)
 
-  const save = useCallback(async () => {
-    clearTimeout(timer.current)
-    if (!ready.current || !user || !dirty.current) return
-    dirty.current = false
-    const { user: _u, cfg: _c, refs: _r, refCode: _k, ...data } = latest.current
-    const { error } = await sb.from('bolso_state').upsert({ user_id: user.id, data, updated_at: new Date().toISOString() }, { onConflict: 'user_id' })
-    if (error) { dirty.current = true; timer.current = setTimeout(save, 5000) }
-  }, [user?.id])
+  useEffect(() => { getPrices().then(setPrices).catch(() => {}) }, [])
 
-  useEffect(() => {
-    if (!on || !user) return
-    // Se o aparelho tinha dados de outra conta, limpa antes de misturar
-    const owner = localStorage.getItem('bolso:owner')
-    localStorage.setItem('bolso:owner', user.id)
-    if (owner && owner !== user.id) { localStorage.removeItem('bolso:v1'); location.reload(); return }
-    ready.current = false
-    let dead = false, retry = 0
-    const run = async () => {
-      const [st, bn, rc] = await Promise.all([
-        sb.from('bolso_state').select('data').eq('user_id', user.id).maybeSingle(),
-        sb.from('bolso_banners').select('*'),
-        sb.rpc('bolso_ref_count'),
-      ])
-      if (dead) return
-      if (st.error) { retry = setTimeout(run, 4000); return } // sem ler, não grava por cima
-      const banners = (bn.data || []).map(r => ({ id: r.id, on: true, title: r.title, text: r.body || '', tone: r.tone }))
-      skip.current = true
-      setS(v => ({ ...v, ...(st.data?.data || {}), refs: rc.data || 0, refCode: profile?.ref_code || v.refCode, cfg: { ...v.cfg, banners } }))
-      dirty.current = false
-      ready.current = true
-    }
-    run()
-    return () => { dead = true; clearTimeout(retry) }
-  }, [on, user?.id])
+  const buy = async plan => {
+    if (!isNative) return setMsg('A assinatura é feita no app do iPhone, pela App Store.')
+    setMsg(''); setBusy(plan)
+    try { await cloud.buy(plan) }
+    catch (e) { if (!e?.userCancelled) setMsg('Não foi possível concluir a compra. Tente novamente.') }
+    setBusy('')
+  }
+  const restore = async () => {
+    setMsg(''); setBusy('restore')
+    try { if (!(await cloud.restore())) setMsg('Nenhuma assinatura encontrada neste Apple ID.') }
+    catch { setMsg('Não foi possível restaurar agora.') }
+    setBusy('')
+  }
+  const useCode = async e => {
+    e.preventDefault(); setMsg(''); setBusy('ref')
+    const r = await cloud.applyRef(code)
+    setBusy('')
+    if (r.error) setMsg(r.error)
+  }
 
-  useEffect(() => {
-    if (!ready.current) return
-    if (skip.current) { skip.current = false; return }
-    dirty.current = true
-    clearTimeout(timer.current)
-    timer.current = setTimeout(save, 1200)
-  }, [s])
+  return (
+    <main className="paywall">
+      <div>
+        <div className="logo"><i />Meu bolso</div>
+        <h1 style={{ marginTop: 12 }}>{p?.trial_until ? 'Seu mês grátis acabou' : 'Escolha seu plano'}</h1>
+        <p className="muted">{p?.name ? `${p.name}, assine` : 'Assine'} para continuar organizando seu dinheiro.</p>
+        {cloud.profileErr && <p className="err">Erro ao carregar seu perfil: {cloud.profileErr}</p>}
+      </div>
+      <div className="grid">
+        <section>
+          <h2>Premium</h2>
+          <p className="big">{prices.premium || 'R$ 19,90'}<small>por mês</small></p>
+          <p className="muted">Até 3 objetivos, renda variável, relatórios, avisos e chat com a equipe.</p>
+          <button className="cta" disabled={!!busy} onClick={() => buy('premium')}>{busy === 'premium' ? 'Aguarde…' : 'Assinar Premium'}</button>
+        </section>
+        <section className="hero-card">
+          <h2>Premium Plus</h2>
+          <p className="big">{prices.plus || 'R$ 29,90'}<small>por mês</small></p>
+          <p className="muted">Tudo do Premium, até 5 objetivos e chat com assistente de IA.</p>
+          <button className="cta" disabled={!!busy} onClick={() => buy('plus')}>{busy === 'plus' ? 'Aguarde…' : 'Assinar Plus'}</button>
+        </section>
+      </div>
+      {msg && <p className="err" role="alert">{msg}</p>}
 
-  useEffect(() => {
-    const vis = () => document.visibilityState === 'hidden' && save()
-    document.addEventListener('visibilitychange', vis)
-    window.addEventListener('pagehide', save)
-    const h = isNative ? CapApp.addListener('appStateChange', ({ isActive }) => { if (!isActive) save() }) : null
-    return () => {
-      document.removeEventListener('visibilitychange', vis)
-      window.removeEventListener('pagehide', save)
-      h?.then(x => x.remove())
-    }
-  }, [save])
+      {!showRef
+        ? <div><button className="ghost" onClick={() => setShowRef(true)}>Tenho um código ou link de indicação</button></div>
+        : (
+          <form className="form" onSubmit={useCode}>
+            <input placeholder="Cole o código ou o link de indicação" value={code} onChange={e => setCode(e.target.value)} />
+            <button className="cta" disabled={!!busy || !code.trim()}>{busy === 'ref' ? 'Verificando…' : 'Usar código'}</button>
+          </form>
+        )}
+
+      <p className="tiny">A assinatura renova todo mês até você cancelar, nas configurações da App Store (Ajustes → seu nome → Assinaturas). O pagamento é cobrado na sua conta Apple na confirmação da compra e renova automaticamente, a menos que seja cancelado pelo menos 24 horas antes do fim do período.</p>
+      <div>
+        <button className="ghost" disabled={!!busy} onClick={restore}>{busy === 'restore' ? 'Restaurando…' : 'Restaurar compras'}</button>
+        <button className="ghost" onClick={cloud.logout}>Sair</button>
+      </div>
+      <p className="tiny"><Policy /> · <Eula /></p>
+    </main>
+  )
 }
 
-export async function enablePush(user) {
-  // iOS nativo (Capacitor): salva o token do APNs na tabela push_tokens
-  if (isNative) return enableNativePush(user)
+export function Chat({ s, P, cloud, say }) {
+  const plus = isPlus(cloud.profile)
+  const [ch, setCh] = useState('admin'), [msgs, setMsgs] = useState([]), [t, setT] = useState(''), [busy, setBusy] = useState(false)
+  const load = async () => { const { data } = await sb.from('bolso_messages').select('role,body,id').eq('channel', ch).order('created_at').limit(60); setMsgs(data || []) }
+  useEffect(() => { load() }, [ch])
+  const send = async e => {
+    e.preventDefault()
+    const text = t.trim(); if (!text || busy) return
+    setT(''); setBusy(true)
+    if (ch === 'admin') {
+      const { error } = await sb.from('bolso_messages').insert({ user_id: cloud.user.id, channel: 'admin', role: 'user', body: text })
+      if (error) say('Não foi possível enviar agora.')
+    } else {
+      const summary = `Renda do ciclo R$ ${Math.round(s.variable && P.canVar ? P.earned : s.salary)}; pode gastar hoje R$ ${Math.round(P.daily / P.daysLeft)}; faltam ${P.daysLeft} dias para receber; plano ${P.livreVar < 0 ? 'apertado' : 'fechando'}.`
+      const { error } = await sb.functions.invoke('bolso-ai-chat', { body: { text, summary } })
+      if (error) say('O assistente não respondeu agora. Tente em instantes.')
+    }
+    await load(); setBusy(false)
+  }
+  return (
+    <section className="wide">
+      <div className="seg">{[['admin', 'Falar com a equipe'], ['ai', 'Assistente IA']].map(([k, l]) => <button key={k} className={ch === k ? 'on' : ''} onClick={() => setCh(k)}>{l}</button>)}</div>
+      {ch === 'ai' && !plus ? (
+        <div className="locked" style={{ marginTop: 14 }}><p className="muted">O assistente de IA faz parte do Premium Plus (R$ 29,90 por mês).</p></div>
+      ) : (
+        <>
+          {ch === 'ai' && <p className="tiny">Para responder, enviamos ao provedor de IA (Groq) a sua pergunta e um resumo dos números do ciclo, sem seu nome. Não é consultoria financeira.</p>}
+          <div className="msgs" style={{ marginTop: 14 }}>
+            {msgs.length === 0 && <p className="muted">Nenhuma mensagem ainda. {ch === 'admin' ? 'Conte como podemos ajudar.' : 'Pergunte como fechar o mês.'}</p>}
+            {msgs.map(x => <p key={x.id} className={x.role === 'user' ? 'me' : ''}>{x.body}</p>)}
+          </div>
+          <form className="form" onSubmit={send}><input value={t} onChange={e => setT(e.target.value)} placeholder="Escreva sua mensagem" maxLength={1000} /><button className="cta" disabled={busy}>Enviar</button></form>
+        </>
+      )}
+    </section>
+  )
+}
 
-  // Navegador / PWA: Web Push com VAPID
-  if (!('serviceWorker' in navigator) || !('PushManager' in window)) throw new Error('unsupported')
-  if ((await Notification.requestPermission()) !== 'granted') throw new Error('denied')
-  const reg = await navigator.serviceWorker.register('/sw.js')
-  await navigator.serviceWorker.ready
-  const key = clean(import.meta.env.VITE_VAPID_PUBLIC_KEY)
-  const raw = atob(key.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(key.length / 4) * 4, '='))
-  const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: Uint8Array.from(raw, c => c.charCodeAt(0)) })
-  const j = sub.toJSON()
-  await sb.from('bolso_push_subs').upsert({ user_id: user.id, endpoint: j.endpoint, sub: j }, { onConflict: 'endpoint' })
+export function Visual({ s, set, say, onExit }) {
+  const [perm, setPerm] = useState('Notification' in window ? Notification.permission : 'unsupported')
+  const ask = async () => { const r = await Notification.requestPermission(); setPerm(r); say(r === 'granted' ? 'Avisos ativados neste aparelho' : 'Permissão não concedida') }
+  return (
+    <div className="grid">
+      <section>
+        <h2>Cor do seu app</h2>
+        <div className="sw">{[172, 215, 265, 330, 18, 45].map(h => <button key={h} aria-label={`Matiz ${h}`} className={s.hue === h ? 'on' : ''} style={{ background: `hsl(${h} 85% 60%)` }} onClick={() => set({ hue: h })} />)}</div>
+        <label>Ajuste fino<input type="range" min="0" max="360" value={s.hue} onChange={e => set({ hue: +e.target.value })} className="hue" /></label>
+        <div className="seg">{[['dark', 'Escuro'], ['light', 'Claro']].map(([k, l]) => <button key={k} className={s.mode === k ? 'on' : ''} onClick={() => set({ mode: k })}>{l}</button>)}</div>
+      </section>
+      <section>
+        <h2>Avisos e privacidade</h2>
+        {isNative ? <p className="muted">Ative os avisos do aparelho em Minha conta.</p>
+          : perm === 'unsupported' ? <p className="muted">Este navegador não oferece avisos no aparelho.</p>
+          : perm === 'granted' ? <p className="muted">Avisos ativos: você recebe o principal alerta do dia ao abrir o app.</p>
+          : <button className="ghost" onClick={ask}>Ativar avisos no aparelho</button>}
+        <button className="ghost" onClick={() => set({ hide: !s.hide })}>{s.hide ? 'Mostrar valores' : 'Ocultar valores'}</button>
+        <button className="ghost" onClick={onExit}>Sair</button>
+      </section>
+    </div>
+  )
+}
+
+function Perfil({ cloud, say, P }) {
+  const p = cloud.profile, [conf, setConf] = useState('')
+  const left = p?.trial_until ? Math.ceil((new Date(p.trial_until) - Date.now()) / 864e5) : 0
+  const push = async () => {
+    try { await enablePush(cloud.user); say('Avisos ativados neste aparelho') }
+    catch (e) { say(e.message === 'denied' ? 'Permissão negada. Libere nas configurações do aparelho.' : 'Este aparelho não suporta avisos. No iPhone, adicione o app à Tela de Início.') }
+  }
+  const del = async () => {
+    const { error } = await sb.functions.invoke('bolso-delete-account')
+    if (error) return say('Não foi possível excluir agora.')
+    cloud.logout()
+  }
+  return (
+    <div className="grid">
+      <section>
+        <h2>Minha conta</h2>
+        <p>{p?.name}</p>
+        <p className="muted">{p?.plan === 'plus' ? 'Premium Plus' : p?.plan === 'premium' ? 'Premium' : left > 0 ? `Mês grátis: ${left} ${left === 1 ? 'dia' : 'dias'} restantes` : 'Sem plano ativo'}</p>
+        <p className="tiny">Seu plano inclui até {P.limit} {P.limit === 1 ? 'objetivo' : 'objetivos'}{P.canVar ? ' e renda variável' : ''}.</p>
+        <button className="ghost" onClick={push}>Ativar avisos no aparelho</button>
+        <button className="ghost" onClick={cloud.logout}>Sair</button>
+        <p className="tiny"><Policy /></p>
+      </section>
+      <section className="danger">
+        <h2>Excluir conta</h2>
+        <p className="muted">Apaga seus dados, mensagens e avisos de forma definitiva. Se você tem assinatura, cancele também na App Store ou no Google Play.</p>
+        <div className="form"><input placeholder="Digite EXCLUIR para confirmar" value={conf} onChange={e => setConf(e.target.value)} /><button className="cta" disabled={conf !== 'EXCLUIR'} onClick={del}>Excluir minha conta</button></div>
+      </section>
+    </div>
+  )
+}
+
+const SUBS = [['conta', 'Minha conta'], ['indique', 'Indique'], ['chat', 'Chat'], ['visual', 'Visual']]
+
+export function Conta(props) {
+  const { cloud, sub, setSub, s, set, say } = props
+  return (
+    <>
+      <div className="seg" style={{ marginBottom: 14 }}>{SUBS.map(([k, l]) => <button key={k} className={sub === k ? 'on' : ''} onClick={() => setSub(k)}>{l}</button>)}</div>
+      {sub === 'conta' && <Perfil {...props} />}
+      {sub === 'indique' && <Indique s={s} say={say} code={cloud.profile?.ref_code} />}
+      {sub === 'chat' && <Chat {...props} />}
+      {sub === 'visual' && <Visual s={s} set={set} say={say} onExit={cloud.logout} />}
+    </>
+  )
 }
