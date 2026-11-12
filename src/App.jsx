@@ -4,6 +4,8 @@ import { Ganhos, Relatorio, Dicas, controlAlerts, addMonth, TIPS0 } from './Extr
 import { useCloud, useSync, tierOf } from './cloud'
 import AdminPage from './AdminPage'
 import { Auth, Paywall, Conta } from './Account'
+import { Ciclo } from './Ciclo'
+
 
 const LEVELS = {
   essencial: { label: 'Essencial', color: 'var(--ess)' },
@@ -252,18 +254,7 @@ function Inicio({ s, P, A, m, go }) {
           <p className="warn">O plano não fecha: faltam {m(-P.livreVar)} por mês. {P.eta ? `Com o que sobra (${m(P.free)}/mês), você chega nos objetivos em ${P.eta.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' })}.` : 'Reduza gastos ou a reserva para abrir espaço.'}</p>
         )}
       </section>
-      <section>
-        <h2>Seus limites no ciclo</h2>
-        {rows.map(([k, label, budget]) => {
-          const used = P.spent(k), over = used > budget
-          return (
-            <div key={k} className="row">
-              <div><span>{label}</span><span className={over ? 'neg' : ''}>{m(P.rem[k])} restam</span></div>
-              <div className="track"><i style={{ width: `${budget > 0 ? Math.min(100, (used / budget) * 100) : 0}%`, background: over ? 'var(--neg)' : LEVELS[k].color }} /></div>
-            </div>
-          )
-        })}
-      </section>
+      <Ciclo s={s} P={P} m={m} />
       <section className="wide">
         <h2>Conquistas</h2>
         <ul className="badges">{badges.map(([l, got]) => <li key={l} className={got ? 'got' : ''}>{got ? '✓' : '○'} {l}</li>)}</ul>
@@ -318,7 +309,7 @@ function GoalCard({ g, s, set, m, say }) {
     if (!v) return
     const after = Math.min(100, ((g.saved + v) / g.target) * 100)
     const hit = [100, 75, 50, 25].find(x => g.pct < x && after >= x)
-    upd({ saved: g.saved + v }); setV(0)
+   set({ goals: s.goals.map(x => x.id === g.id ? { ...x, saved: x.saved + v } : x), deposits: [...(s.deposits || []), { id: Date.now(), goalId: g.id, value: v, date: toISO(new Date()) }] }); setV(0)
     say(hit ? `🎉 Você chegou a ${hit}% de ${g.name || 'sua meta'}!` : 'Depósito registrado')
   }
   return (

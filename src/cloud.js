@@ -94,31 +94,68 @@ export function useCloud() {
   return { status, user: session?.user, profile, profileErr, refresh: () => load(session), logout: leave }
 }
 
-// Sincroniza o estado do app com o Supabase e carrega banners do admin. Não envia 'user' nem 'cfg'.
+// Sincroniza o estado do app com o Supabase.
+// Regras: nunca grava antes de ler com sucesso (evita apagar dados do servidor), grava 1,2 s depois
+// de cada mudança, tenta de novo se falhar e salva ao fechar o app ou mandá-lo para o fundo.
 export function useSync(s, setS, on, user, profile) {
-  const ready = useRef(false)
+  const ready = useRef(false), skip = useRef(false), dirty = useRef(false)
+  const latest = useRef(s), timer = useRef(0)
+  latest.current = s
+
+  const save = useCallback(async () => {
+    clearTimeout(timer.current)
+    if (!ready.current || !user || !dirty.current) return
+    dirty.current = false
+    const { user: _u, cfg: _c, refs: _r, refCode: _k, ...data } = latest.current
+    const { error } = await sb.from('bolso_state').upsert({ user_id: user.id, data, updated_at: new Date().toISOString() }, { onConflict: 'user_id' })
+    if (error) { dirty.current = true; timer.current = setTimeout(save, 5000) }
+  }, [user?.id])
+
   useEffect(() => {
     if (!on || !user) return
+    // Se o aparelho tinha dados de outra conta, limpa antes de misturar
+    const owner = localStorage.getItem('bolso:owner')
+    localStorage.setItem('bolso:owner', user.id)
+    if (owner && owner !== user.id) { localStorage.removeItem('bolso:v1'); location.reload(); return }
     ready.current = false
-    ;(async () => {
+    let dead = false, retry = 0
+    const run = async () => {
       const [st, bn, rc] = await Promise.all([
         sb.from('bolso_state').select('data').eq('user_id', user.id).maybeSingle(),
         sb.from('bolso_banners').select('*'),
         sb.rpc('bolso_ref_count'),
       ])
+      if (dead) return
+      if (st.error) { retry = setTimeout(run, 4000); return } // sem ler, não grava por cima
       const banners = (bn.data || []).map(r => ({ id: r.id, on: true, title: r.title, text: r.body || '', tone: r.tone }))
+      skip.current = true
       setS(v => ({ ...v, ...(st.data?.data || {}), refs: rc.data || 0, refCode: profile?.ref_code || v.refCode, cfg: { ...v.cfg, banners } }))
+      dirty.current = false
       ready.current = true
-    })()
+    }
+    run()
+    return () => { dead = true; clearTimeout(retry) }
   }, [on, user?.id])
+
   useEffect(() => {
-    if (!on || !user || !ready.current) return
-    const t = setTimeout(() => {
-      const { user: _u, cfg: _c, refs: _r, refCode: _k, ...data } = s
-      sb.from('bolso_state').upsert({ user_id: user.id, data, updated_at: new Date().toISOString() })
-    }, 1200)
-    return () => clearTimeout(t)
-  }, [s, on, user?.id])
+    if (!ready.current) return
+    if (skip.current) { skip.current = false; return }
+    dirty.current = true
+    clearTimeout(timer.current)
+    timer.current = setTimeout(save, 1200)
+  }, [s])
+
+  useEffect(() => {
+    const vis = () => document.visibilityState === 'hidden' && save()
+    document.addEventListener('visibilitychange', vis)
+    window.addEventListener('pagehide', save)
+    const h = isNative ? CapApp.addListener('appStateChange', ({ isActive }) => { if (!isActive) save() }) : null
+    return () => {
+      document.removeEventListener('visibilitychange', vis)
+      window.removeEventListener('pagehide', save)
+      h?.then(x => x.remove())
+    }
+  }, [save])
 }
 
 export async function enablePush(user) {
