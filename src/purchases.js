@@ -7,6 +7,8 @@ export const PRODUCT_IDS = {
   plus: 'meubolso.plus.mensal',
 }
 
+const MANAGE_URL = 'https://apps.apple.com/account/subscriptions'
+
 const timeout = (p, ms = 8000) =>
   Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))])
 
@@ -43,6 +45,7 @@ export async function getCustomerInfo() {
 }
 
 export async function watchPurchases(cb) {
+  if (!isNative) return () => {}
   const id = await Purchases.addCustomerInfoUpdateListener(info => cb(info))
   return () => { try { Purchases.removeCustomerInfoUpdateListener({ listenerToRemove: id }) } catch {} }
 }
@@ -78,4 +81,11 @@ export async function purchasePlan(plan) {
 export async function restorePurchases() {
   const { customerInfo } = await timeout(Purchases.restorePurchases(), 15000)
   return customerInfo
+}
+
+// A Apple não permite cancelar dentro do app: abre a tela oficial de assinaturas
+export async function manageSubscription() {
+  if (!isNative) { window.open(MANAGE_URL, '_blank'); return }
+  try { await Purchases.showManageSubscriptions() }
+  catch { window.open(MANAGE_URL, '_blank') }
 }

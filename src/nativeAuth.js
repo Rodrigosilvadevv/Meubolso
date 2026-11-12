@@ -5,6 +5,9 @@ import { SocialLogin } from '@capgo/capacitor-social-login'
 
 export const isNative = Capacitor.isNativePlatform()
 
+// Tabela única de tokens (a mesma que a Edge Function de envio deve ler)
+const TOKENS = 'bolso_push_tokens'
+
 // Sessão persistente no iOS (não é apagada pelo sistema)
 export const authStorage = {
   getItem: async k => (await Preferences.get({ key: k })).value,
@@ -50,7 +53,7 @@ export const makeOauth = sb => async provider => {
   }
 }
 
-// ---------- Push iOS: salva o token APNs na tabela push_tokens ----------
+// ---------- Push iOS: salva o token APNs na tabela bolso_push_tokens ----------
 export const makeEnablePush = sb => async user => {
   if (!isNative) throw new Error('unsupported')
   let perm = await PushNotifications.checkPermissions()
@@ -59,11 +62,11 @@ export const makeEnablePush = sb => async user => {
 
   await PushNotifications.removeAllListeners()
   await PushNotifications.addListener('registration', async t => {
-    const { error } = await sb.from('push_tokens').upsert(
+    const { error } = await sb.from(TOKENS).upsert(
       { user_id: user.id, token: t.value, platform: Capacitor.getPlatform(), updated_at: new Date().toISOString() },
       { onConflict: 'token' }
     )
-    if (error) console.error('push_tokens:', error.message)
+    if (error) console.error(`${TOKENS}:`, error.message)
   })
   await PushNotifications.addListener('registrationError', e => console.error('Push erro:', e))
   await PushNotifications.register()
@@ -71,5 +74,5 @@ export const makeEnablePush = sb => async user => {
 
 export const makeRemovePushToken = sb => async user => {
   if (!isNative || !user) return
-  await sb.from('push_tokens').delete().eq('user_id', user.id).eq('platform', Capacitor.getPlatform())
+  await sb.from(TOKENS).delete().eq('user_id', user.id).eq('platform', Capacitor.getPlatform())
 }
