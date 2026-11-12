@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createClient } from '@supabase/supabase-js'
 import { App as CapApp } from '@capacitor/app'
-import { authStorage, isNative, makeOauth, makeEnablePush, makeRemovePushToken } from './native-Auth'
-
+import { authStorage, isNative, makeOauth, makeEnablePush, makeRemovePushToken } from './nativeAuth.js'
 // Sessão salva no aparelho (no iOS usa Preferences, que não é apagado pelo sistema).
 // Só o token fica guardado, nunca a senha. O usuário só sai ao tocar em "Sair".
 export const sb = createClient(import.meta.env.VITE_SUPABASE_URL, import.meta.env.VITE_SUPABASE_ANON_KEY, {
