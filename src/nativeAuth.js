@@ -53,17 +53,32 @@ export const makeOauth = sb => async provider => {
   }
 }
 
+const sleep = ms => new Promise(r => setTimeout(r, ms))
+
 // Salva o token no banco. A função RPC reatribui o token ao usuário logado mesmo que ele
 // já pertença a outra conta (troca de conta no mesmo aparelho). Sem a RPC, cai no upsert direto.
+// Retorna true se salvou, false se falhou.
 const saveToken = async (sb, user, token) => {
   const platform = Capacitor.getPlatform()
   const { error } = await sb.rpc('save_push_token', { p_token: token, p_platform: platform })
-  if (!error) return
+  if (!error) return true
+  console.warn('save_push_token falhou:', error.message)
   const { error: e2 } = await sb.from(TOKENS).upsert(
     { user_id: user.id, token, platform, updated_at: new Date().toISOString() },
     { onConflict: 'token' }
   )
-  if (e2) console.error(`${TOKENS}:`, e2.message)
+  if (e2) { console.error(`${TOKENS}:`, e2.message); return false }
+  return true
+}
+
+// Tenta salvar até 3 vezes, com espera crescente entre as tentativas
+const saveTokenRetry = async (sb, user, token) => {
+  for (let i = 0; i < 3; i++) {
+    if (await saveToken(sb, user, token)) return true
+    await sleep(1500 * (i + 1))
+  }
+  console.error('Não foi possível salvar o token de push após 3 tentativas')
+  return false
 }
 
 // ---------- Push iOS: salva o token APNs na tabela bolso_push_tokens ----------
@@ -74,9 +89,24 @@ export const makeEnablePush = sb => async user => {
   if (perm.receive !== 'granted') throw new Error('denied')
 
   await PushNotifications.removeAllListeners()
-  await PushNotifications.addListener('registration', t => saveToken(sb, user, t.value))
-  await PushNotifications.addListener('registrationError', e => console.error('Push erro:', e))
-  await PushNotifications.register()
+
+  const token = await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('push-timeout')), 20000)
+    // Listener permanente: também salva se o iOS trocar o token depois
+    PushNotifications.addListener('registration', t => {
+      clearTimeout(timer)
+      resolve(t.value)
+      saveTokenRetry(sb, user, t.value)
+    })
+    PushNotifications.addListener('registrationError', e => {
+      clearTimeout(timer)
+      console.error('Push erro:', e)
+      reject(new Error(e?.error || 'registrationError'))
+    })
+    PushNotifications.register().catch(e => { clearTimeout(timer); reject(e) })
+  })
+
+  return token
 }
 
 export const makeRemovePushToken = sb => async user => {
