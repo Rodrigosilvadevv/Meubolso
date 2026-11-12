@@ -1,8 +1,21 @@
 import { useEffect, useState } from 'react'
-import { sb, oauth, signUpPhone, signInPhone, enablePush, isPlus, parseRef } from './cloud'
+import { createClient } from '@supabase/supabase-js'
+import { oauth, signUpPhone, signInPhone, enablePush, isPlus, parseRef } from './cloud'
 import { isNative } from './nativeAuth.js'
 import { getPrices } from './purchases'
 import { Indique } from './Extras'
+
+const SUPABASE_URL = 'https://xtwdxmrpnmzaxofuxbps.supabase.co'
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inh0d2R4bXJwbm16YXhvZnV4YnBzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTQ0Mzk0MjcsImV4cCI6MjExMDAxNTQyN30.inm92mdOZNF7Ig6olSr59G6qvoB7ltN2FisNypPAHHQ'
+
+// Cliente Supabase robusto com detecção de sessão na URL ativada
+export const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  auth: {
+    persistSession: true,
+    autoRefreshToken: true,
+    detectSessionInUrl: true
+  }
+})
 
 const Policy = () => <a href="/privacidade.html" target="_blank" rel="noreferrer">Política de Privacidade e LGPD</a>
 const Eula = () => <a href="https://www.apple.com/legal/internet-services/itunes/dev/stdeula/" target="_blank" rel="noreferrer">Termos de Uso</a>
@@ -14,6 +27,17 @@ export function Auth() {
   const ref = localStorage.getItem('bolso:ref')
   const need = () => ok || (setErr('Aceite a Política de Privacidade para continuar.'), false)
   const saveCode = () => { const c = parseRef(code); if (c) localStorage.setItem('bolso:ref', c) }
+
+  // Intercepta e limpa tokens de retorno do OAuth na montagem do componente
+  useEffect(() => {
+    if (window.location.hash && window.location.hash.includes('access_token')) {
+      sb.auth.getSession().then(({ data: { session } }) => {
+        if (session) {
+          window.history.replaceState({}, document.title, window.location.pathname)
+        }
+      })
+    }
+  }, [])
 
   const social = async provider => {
     if (!need()) return
