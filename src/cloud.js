@@ -51,7 +51,11 @@ export const signUpPhone = async (name, tel, password) => {
     options: { data: { name } }
   })
   if (!error && data.user) {
-    await sb.from('bolso_profiles').upsert({ user_id: data.user.id, name })
+    await sb.from('bolso_profiles').upsert({ 
+      user_id: data.user.id, 
+      name,
+      created_at: new Date().toISOString()
+    })
   }
   return { data, error }
 }
