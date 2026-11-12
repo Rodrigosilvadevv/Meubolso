@@ -1,0 +1,13 @@
+{
+  "appId": "app.meubolso.bolso",
+  "appName": "Meu bolso",
+  "webDir": "dist",
+  "ios": {
+    "contentInset": "always"
+  },
+  "plugins": {
+    "PushNotifications": {
+      "presentationOptions": ["badge", "sound", "alert"]
+    }
+  }
+}

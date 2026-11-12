@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { sb, oauth, signUpPhone, signInPhone, enablePush, isPlus } from './cloud'
+import { Indique } from './Extras'
 
 const Policy = () => <a href="/privacidade.html" target="_blank" rel="noreferrer">Política de Privacidade e LGPD</a>
 
@@ -74,13 +75,13 @@ export function Paywall({ cloud }) {
         <section>
           <h2>Premium</h2>
           <p className="big">R$ 19,90<small>por mês</small></p>
-          <p className="muted">Plano, metas, relatórios, avisos e chat com a equipe.</p>
+          <p className="muted">Até 3 objetivos, renda variável, relatórios, avisos e chat com a equipe.</p>
           <button className="cta" onClick={() => buy('premium')}>Assinar Premium</button>
         </section>
         <section className="hero-card">
           <h2>Premium Plus</h2>
           <p className="big">R$ 29,90<small>por mês</small></p>
-          <p className="muted">Tudo do Premium e chat com assistente de IA.</p>
+          <p className="muted">Tudo do Premium, até 5 objetivos e chat com assistente de IA.</p>
           <button className="cta" onClick={() => buy('plus')}>Assinar Plus</button>
         </section>
       </div>
@@ -104,7 +105,7 @@ export function Chat({ s, P, cloud, say }) {
       const { error } = await sb.from('bolso_messages').insert({ user_id: cloud.user.id, channel: 'admin', role: 'user', body: text })
       if (error) say('Não foi possível enviar agora.')
     } else {
-      const summary = `Renda do ciclo R$ ${Math.round(s.variable ? P.earned : s.salary)}; pode gastar hoje R$ ${Math.round(P.daily / P.daysLeft)}; faltam ${P.daysLeft} dias para receber; plano ${P.livreVar < 0 ? 'apertado' : 'fechando'}.`
+      const summary = `Renda do ciclo R$ ${Math.round(s.variable && P.canVar ? P.earned : s.salary)}; pode gastar hoje R$ ${Math.round(P.daily / P.daysLeft)}; faltam ${P.daysLeft} dias para receber; plano ${P.livreVar < 0 ? 'apertado' : 'fechando'}.`
       const { error } = await sb.functions.invoke('bolso-ai-chat', { body: { text, summary } })
       if (error) say('O assistente não respondeu agora. Tente em instantes.')
     }
@@ -114,7 +115,7 @@ export function Chat({ s, P, cloud, say }) {
     <section className="wide">
       <div className="seg">{[['admin', 'Falar com a equipe'], ['ai', 'Assistente IA']].map(([k, l]) => <button key={k} className={ch === k ? 'on' : ''} onClick={() => setCh(k)}>{l}</button>)}</div>
       {ch === 'ai' && !plus ? (
-        <div className="locked" style={{ marginTop: 14 }}><p className="muted">O assistente de IA faz parte do Premium Plus (R$ 29,90 por mês).</p><button className="cta" onClick={() => alert('Troque de plano na App Store ou no Google Play.')}>Ver o Plus</button></div>
+        <div className="locked" style={{ marginTop: 14 }}><p className="muted">O assistente de IA faz parte do Premium Plus (R$ 29,90 por mês).</p></div>
       ) : (
         <>
           {ch === 'ai' && <p className="tiny">Para responder, enviamos ao provedor de IA (Groq) a sua pergunta e um resumo dos números do ciclo, sem seu nome. Não é consultoria financeira.</p>}
@@ -129,7 +130,30 @@ export function Chat({ s, P, cloud, say }) {
   )
 }
 
-export function Conta({ cloud, say }) {
+export function Visual({ s, set, say, onExit }) {
+  const [perm, setPerm] = useState('Notification' in window ? Notification.permission : 'unsupported')
+  const ask = async () => { const r = await Notification.requestPermission(); setPerm(r); say(r === 'granted' ? 'Avisos ativados neste aparelho' : 'Permissão não concedida') }
+  return (
+    <div className="grid">
+      <section>
+        <h2>Cor do seu app</h2>
+        <div className="sw">{[172, 215, 265, 330, 18, 45].map(h => <button key={h} aria-label={`Matiz ${h}`} className={s.hue === h ? 'on' : ''} style={{ background: `hsl(${h} 85% 60%)` }} onClick={() => set({ hue: h })} />)}</div>
+        <label>Ajuste fino<input type="range" min="0" max="360" value={s.hue} onChange={e => set({ hue: +e.target.value })} className="hue" /></label>
+        <div className="seg">{[['dark', 'Escuro'], ['light', 'Claro']].map(([k, l]) => <button key={k} className={s.mode === k ? 'on' : ''} onClick={() => set({ mode: k })}>{l}</button>)}</div>
+      </section>
+      <section>
+        <h2>Avisos e privacidade</h2>
+        {perm === 'unsupported' ? <p className="muted">Este navegador não oferece avisos no aparelho.</p>
+          : perm === 'granted' ? <p className="muted">Avisos ativos: você recebe o principal alerta do dia ao abrir o app.</p>
+          : <button className="ghost" onClick={ask}>Ativar avisos no aparelho</button>}
+        <button className="ghost" onClick={() => set({ hide: !s.hide })}>{s.hide ? 'Mostrar valores' : 'Ocultar valores'}</button>
+        <button className="ghost" onClick={onExit}>Sair</button>
+      </section>
+    </div>
+  )
+}
+
+function Perfil({ cloud, say, P }) {
   const p = cloud.profile, [conf, setConf] = useState('')
   const left = p?.trial_until ? Math.ceil((new Date(p.trial_until) - Date.now()) / 864e5) : 0
   const push = async () => {
@@ -147,6 +171,7 @@ export function Conta({ cloud, say }) {
         <h2>Minha conta</h2>
         <p>{p?.name}</p>
         <p className="muted">{p?.plan === 'plus' ? 'Premium Plus' : p?.plan === 'premium' ? 'Premium' : left > 0 ? `Mês grátis: ${left} ${left === 1 ? 'dia' : 'dias'} restantes` : 'Sem plano ativo'}</p>
+        <p className="tiny">Seu plano inclui até {P.limit} {P.limit === 1 ? 'objetivo' : 'objetivos'}{P.canVar ? ' e renda variável' : ''}.</p>
         <button className="ghost" onClick={push}>Ativar avisos no aparelho</button>
         <button className="ghost" onClick={cloud.logout}>Sair</button>
         <p className="tiny"><Policy /></p>
@@ -157,5 +182,20 @@ export function Conta({ cloud, say }) {
         <div className="form"><input placeholder="Digite EXCLUIR para confirmar" value={conf} onChange={e => setConf(e.target.value)} /><button className="cta" disabled={conf !== 'EXCLUIR'} onClick={del}>Excluir minha conta</button></div>
       </section>
     </div>
+  )
+}
+
+const SUBS = [['conta', 'Minha conta'], ['indique', 'Indique'], ['chat', 'Chat'], ['visual', 'Visual']]
+
+export function Conta(props) {
+  const { cloud, sub, setSub, s, set, say } = props
+  return (
+    <>
+      <div className="seg" style={{ marginBottom: 14 }}>{SUBS.map(([k, l]) => <button key={k} className={sub === k ? 'on' : ''} onClick={() => setSub(k)}>{l}</button>)}</div>
+      {sub === 'conta' && <Perfil {...props} />}
+      {sub === 'indique' && <Indique s={s} say={say} code={cloud.profile?.ref_code} />}
+      {sub === 'chat' && <Chat {...props} />}
+      {sub === 'visual' && <Visual s={s} set={set} say={say} onExit={cloud.logout} />}
+    </>
   )
 }
