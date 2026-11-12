@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { createClient } from '@supabase/supabase-js'
 import { Capacitor } from '@capacitor/core'
 import { PushNotifications } from '@capacitor/push-notifications'
@@ -14,6 +15,17 @@ export const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
 })
 
 export const isPlus = profile => profile?.plan === 'premium' || profile?.plan === 'plus'
+
+export const tierOf = profile => {
+  if (!profile) return 'free'
+  const now = new Date()
+  const hasPlan = profile.plan === 'premium' || profile.plan === 'plus'
+  const hasTrial = profile.trial_until && new Date(profile.trial_until) > now
+  if (hasPlan || hasTrial) {
+    return profile.plan === 'plus' ? 'plus' : 'premium'
+  }
+  return 'free'
+}
 
 export const parseRef = code => {
   if (!code) return ''
