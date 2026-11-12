@@ -136,7 +136,14 @@ function useCount(v) {
 function Main() {
   const [s, setS] = useState(load)
   const cloud = useCloud()
-  const ok = cloud.status === 'in'
+const locked = ok && tier === 'free'   // logado, sem plano e sem trial
+if (!ok || locked) return (
+  <div className={cls} style={sty}>
+    {cloud.status === 'loading' ? <p className="muted" style={{ padding: 40 }}>Carregando…</p>
+      : cloud.status === 'out' ? <Auth />
+      : <Paywall cloud={cloud} />}
+  </div>
+)
   const tier = tierOf(cloud.profile)
   const [tab, setTab] = useState(s.salary ? 'inicio' : 'plano')
   const [sub, setSub] = useState('conta')

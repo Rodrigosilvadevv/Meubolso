@@ -43,19 +43,11 @@ export const oauth = provider => makeOauth(sb)(provider)
 
 export const signUpPhone = async (name, tel, password) => {
   const email = `${tel.replace(/\D/g, '')}@meubolso.app`
-  const { data, error } = await sb.auth.signUp({
+  return await sb.auth.signUp({
     email,
     password,
     options: { data: { name } },
   })
-  if (!error && data.user) {
-    await sb.from('bolso_profiles').upsert({
-      user_id: data.user.id,
-      name,
-      created_at: new Date().toISOString(),
-    })
-  }
-  return { data, error }
 }
 
 export const signInPhone = async (tel, password) => {
