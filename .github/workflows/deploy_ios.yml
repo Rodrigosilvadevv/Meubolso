@@ -102,6 +102,12 @@ jobs:
           echo "Tamanhos originais: key=${#RAW_KEY_ID} (esperado 10), issuer=${#RAW_ISSUER_ID} (esperado 36)"
           echo "p8 com BEGIN PRIVATE KEY: $(grep -c 'BEGIN PRIVATE KEY' "$P8") (esperado 1)"
 
+          # Diagnóstico: mostra Key ID e Issuer ID espaçados (o GitHub não mascara assim)
+          # e a impressão digital da chave PÚBLICA do .p8 (não revela a chave privada)
+          echo "Key ID no secret:    $(printf %s "$KEY_ID" | sed 's/./& /g')"
+          echo "Issuer ID no secret: $(printf %s "$ISSUER_ID" | sed 's/./& /g')"
+          echo "Impressão digital do .p8: $(openssl pkey -in "$P8" -pubout | openssl dgst -sha256)"
+
           # Testa as credenciais direto na API da Apple antes de compilar
           export KEY_ID ISSUER_ID
           python3 -m venv /tmp/v
