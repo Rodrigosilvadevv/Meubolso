@@ -231,7 +231,6 @@ function Inicio({ s, P, A, m, go }) {
   const C = 2 * Math.PI * 54
   const day = useCount(P.daily / P.daysLeft)
   const gp = P.goals.reduce((a, g) => Math.max(a, g.pct), 0)
-  const rows = [['essencial', 'Essencial variável', s.varEss], ['imprevisto', 'Imprevistos', P.reserve], ['livre', 'Livre', P.livreVar]]
   const badges = [['Plano criado', s.salary > 0], ['Primeiro gasto', s.spends.length > 0], ['No orçamento', s.salary > 0 && P.rem.livre >= 0 && P.rem.essencial >= 0], ['Meta 25%', gp >= 25], ['Meta 50%', gp >= 50], ['Meta batida', gp >= 100]]
   return (
     <div className="grid">
@@ -265,6 +264,8 @@ function Inicio({ s, P, A, m, go }) {
 
 function Gastos({ s, set, P, m }) {
   const [f, setF] = useState({ desc: '', value: 0, bucket: 'essencial' })
+  // "Ganho do dia" só aparece se a pessoa marcou renda variável no Plano (e o plano permite).
+  const varOn = s.variable && P.canVar
   const add = e => {
     e.preventDefault()
     if (!f.value) return
@@ -282,7 +283,7 @@ function Gastos({ s, set, P, m }) {
           <button className="cta">Registrar</button>
         </form>
       </section>
-      {P.canVar && <Ganhos s={s} set={set} P={P} m={m} />}
+      {varOn && <Ganhos s={s} set={set} P={P} m={m} />}
       <section>
         <h2>Neste ciclo</h2>
         <ul className="list">
@@ -309,7 +310,7 @@ function GoalCard({ g, s, set, m, say }) {
     if (!v) return
     const after = Math.min(100, ((g.saved + v) / g.target) * 100)
     const hit = [100, 75, 50, 25].find(x => g.pct < x && after >= x)
-   set({ goals: s.goals.map(x => x.id === g.id ? { ...x, saved: x.saved + v } : x), deposits: [...(s.deposits || []), { id: Date.now(), goalId: g.id, value: v, date: toISO(new Date()) }] }); setV(0)
+    set({ goals: s.goals.map(x => x.id === g.id ? { ...x, saved: x.saved + v } : x), deposits: [...(s.deposits || []), { id: Date.now(), goalId: g.id, value: v, date: toISO(new Date()) }] }); setV(0)
     say(hit ? `🎉 Você chegou a ${hit}% de ${g.name || 'sua meta'}!` : 'Depósito registrado')
   }
   return (
@@ -319,7 +320,7 @@ function GoalCard({ g, s, set, m, say }) {
       <div className="track tall"><i style={{ width: `${g.pct}%`, background: 'var(--obj)' }} />{[25, 50, 75].map(x => <u key={x} style={{ left: `${x}%` }} />)}</div>
       <div className="marks">{[25, 50, 75, 100].map(x => <span key={x} className={g.pct >= x ? 'got' : ''}>{x}%</span>)}</div>
       <p className="muted">{m(g.saved)} de {m(g.target)} · meta para {g.date ? new Date(g.date + 'T00:00').toLocaleDateString('pt-BR') : 'sem data'}.</p>
-      <p className="muted">{g.months ? `Guarde ${m(g.need)} por mês (${g.months} ${g.months === 1 ? 'mês' : 'meses'}) para chegar no prazo.` : 'Defina uma data no Plano para ver quanto guardar por mês.'}</p>
+      <p className="muted">{g.months ? `Guarde ${m(g.need)} por mês (${g.months} ${g.months === 1 ? 'mês' : 'meses'}) para chegar no prazo.` : 'Defina uma data em "Meus objetivos" para ver quanto guardar por mês.'}</p>
       <form className="form" onSubmit={dep}>
         <Num placeholder={`Sugestão: ${g.need.toFixed(2)}`} value={v} onChange={setV} />
         <button className="cta">Guardar</button>
@@ -329,11 +330,30 @@ function GoalCard({ g, s, set, m, say }) {
   )
 }
 
-function Meta({ s, set, P, m, say, go }) {
+function Meta({ s, set, P, m, say }) {
   const list = P.goals.filter(g => g.target > 0)
-  if (!list.length) return <section><h2>Defina seu objetivo</h2><p className="muted">Diga o que quer conquistar, quanto custa e até quando.</p><button className="cta" onClick={() => go('plano')}>Criar objetivo</button></section>
+  const atLimit = s.goals.length >= P.limit
+  const updGoal = (id, patch) => set({ goals: s.goals.map(x => x.id === id ? { ...x, ...patch } : x) })
+  const addGoal = () => { if (!atLimit) set({ goals: [...s.goals, { id: Date.now(), name: '', target: 0, date: '', saved: 0, delays: 0 }] }) }
   return (
     <div className="grid">
+      <section className="wide">
+        <h2>Meus objetivos</h2>
+        {s.goals.length === 0 && <p className="muted">Diga o que quer conquistar, quanto custa e até quando.</p>}
+        <div className="form">
+          {s.goals.map(g => (
+            <div key={g.id} className="form">
+              <input value={g.name} placeholder="O que quero (ex.: Viagem)" aria-label="Nome do objetivo" onChange={e => updGoal(g.id, { name: e.target.value })} />
+              <Num placeholder="Quanto custa" aria-label="Quanto custa" value={g.target} onChange={v => updGoal(g.id, { target: v })} />
+              <input type="date" aria-label="Até quando" value={g.date} onChange={e => updGoal(g.id, { date: e.target.value })} />
+              <Num placeholder="Já guardei" aria-label="Já guardei" value={g.saved} onChange={v => updGoal(g.id, { saved: v })} />
+              <button type="button" className="ghost" onClick={() => set({ goals: s.goals.filter(x => x.id !== g.id) })}>Remover objetivo</button>
+            </div>
+          ))}
+          <button type="button" className="ghost" disabled={atLimit} onClick={addGoal}>Adicionar objetivo</button>
+          {atLimit && <p className="tiny">Seu plano permite até {P.limit} {P.limit === 1 ? 'objetivo' : 'objetivos'}.</p>}
+        </div>
+      </section>
       {list.map(g => <GoalCard key={g.id} g={g} s={s} set={set} m={m} say={say} />)}
       {P.eta && <section className="wide"><p className="muted">No ritmo do que sobra, você chega lá em {P.eta.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' })}.</p></section>}
     </div>
@@ -342,9 +362,6 @@ function Meta({ s, set, P, m, say, go }) {
 
 function Plano({ s, set, P }) {
   const [n, setN] = useState({ name: '', value: 0, level: 'essencial', day: 0 })
-  const atLimit = s.goals.length >= P.limit
-  const updGoal = (id, patch) => set({ goals: s.goals.map(x => x.id === id ? { ...x, ...patch } : x) })
-  const addGoal = () => { if (!atLimit) set({ goals: [...s.goals, { id: Date.now(), name: '', target: 0, date: '', saved: 0, delays: 0 }] }) }
   const add = e => {
     e.preventDefault()
     if (!n.name || !n.value) return
@@ -361,22 +378,6 @@ function Plano({ s, set, P }) {
           {!P.canVar && <p className="tiny">Renda variável faz parte do Premium e do Plus.</p>}
           <label>{varOn ? 'Estimativa mínima do mês' : 'Valor líquido'}<Num value={s.salary} onChange={v => set({ salary: v })} /></label>
           <label>Dia que recebo<input type="number" min="1" max="31" value={s.payDay} onChange={e => set({ payDay: Math.min(31, Math.max(1, +e.target.value || 1)) })} /></label>
-        </div>
-      </section>
-      <section>
-        <h2>Meus objetivos</h2>
-        <div className="form">
-          {s.goals.map(g => (
-            <div key={g.id} className="form">
-              <input value={g.name} placeholder="O que quero (ex.: Viagem)" aria-label="Nome do objetivo" onChange={e => updGoal(g.id, { name: e.target.value })} />
-              <Num placeholder="Quanto custa" aria-label="Quanto custa" value={g.target} onChange={v => updGoal(g.id, { target: v })} />
-              <input type="date" aria-label="Até quando" value={g.date} onChange={e => updGoal(g.id, { date: e.target.value })} />
-              <Num placeholder="Já guardei" aria-label="Já guardei" value={g.saved} onChange={v => updGoal(g.id, { saved: v })} />
-              <button type="button" className="ghost" onClick={() => set({ goals: s.goals.filter(x => x.id !== g.id) })}>Remover objetivo</button>
-            </div>
-          ))}
-          <button type="button" className="ghost" disabled={atLimit} onClick={addGoal}>Adicionar objetivo</button>
-          {atLimit && <p className="tiny">Seu plano permite até {P.limit} {P.limit === 1 ? 'objetivo' : 'objetivos'}.</p>}
         </div>
       </section>
       <section className="wide">
