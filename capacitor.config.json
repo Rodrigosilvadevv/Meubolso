@@ -1,5 +1,15 @@
 {
   "appId": "com.meubolso.bolso",
   "appName": "Meu Bolso",
-  "webDir": "dist"
+  "webDir": "dist",
+  "plugins": {
+    "SocialLogin": {
+      "providers": {
+        "apple": true,
+        "google": false,
+        "facebook": false,
+        "twitter": false
+      }
+    }
+  }
 }
