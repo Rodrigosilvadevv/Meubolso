@@ -1,7 +1,6 @@
 import { Purchases } from '@revenuecat/purchases-capacitor'
 import { isNative } from './nativeAuth.js'
 
-// Troque pelos IDs reais dos produtos no App Store Connect
 export const PRODUCT_IDS = {
   premium: 'meubolso.premium.mensal',
   plus: 'meubolso.plus.mensal',
@@ -9,7 +8,7 @@ export const PRODUCT_IDS = {
 
 const MANAGE_URL = 'https://apps.apple.com/account/subscriptions'
 
-const timeout = (p, ms = 8000) =>
+const timeout = (p, ms = 10000) =>
   Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))])
 
 let configured = false
@@ -18,20 +17,27 @@ export async function initPurchases(userId) {
   if (!isNative) return
   const apiKey = import.meta.env.VITE_RC_IOS_KEY
   if (!apiKey) throw new Error('NO_RC_KEY')
-  if (!configured) {
-    await timeout(Purchases.configure({ apiKey, appUserID: userId }))
-    configured = true
-  } else {
-    await timeout(Purchases.logIn({ appUserID: userId }))
+  try {
+    if (!configured) {
+      await timeout(Purchases.configure({ apiKey, appUserID: userId || undefined }))
+      configured = true
+    } else if (userId) {
+      await timeout(Purchases.logIn({ appUserID: userId }))
+    }
+  } catch (e) {
+    console.error('Erro ao inicializar RevenueCat:', e)
   }
 }
 
 export async function resetPurchases() {
   if (!isNative || !configured) return
-  await Purchases.logOut()
+  try {
+    await Purchases.logOut()
+  } catch (e) {
+    console.error('Erro ao fazer logout no RevenueCat:', e)
+  }
 }
 
-// Converte o customerInfo do RevenueCat em { plan, plan_until } (ou null se não tem assinatura ativa)
 export const planFromInfo = info => {
   const a = info?.entitlements?.active || {}
   const e = a.plus || a.premium
@@ -40,52 +46,87 @@ export const planFromInfo = info => {
 }
 
 export async function getCustomerInfo() {
-  const { customerInfo } = await timeout(Purchases.getCustomerInfo())
-  return customerInfo
+  if (!isNative) return null
+  try {
+    const { customerInfo } = await timeout(Purchases.getCustomerInfo())
+    return customerInfo
+  } catch (e) {
+    console.error('Erro ao buscar customerInfo:', e)
+    return null
+  }
 }
 
 export async function watchPurchases(cb) {
   if (!isNative) return () => {}
-  const id = await Purchases.addCustomerInfoUpdateListener(info => cb(info))
-  return () => { try { Purchases.removeCustomerInfoUpdateListener({ listenerToRemove: id }) } catch {} }
+  try {
+    const listener = await Purchases.addCustomerInfoUpdateListener(info => cb(info))
+    return () => {
+      try {
+        if (listener && typeof listener.remove === 'function') {
+          listener.remove()
+        } else if (listener?.id) {
+          Purchases.removeCustomerInfoUpdateListener({ listenerToRemove: listener.id })
+        }
+      } catch {}
+    }
+  } catch (e) {
+    console.error('Erro ao registrar listener do RevenueCat:', e)
+    return () => {}
+  }
 }
 
 async function packages() {
-  const { current, all } = await timeout(Purchases.getOfferings())
-  return [
-    ...(current?.availablePackages || []),
-    ...Object.values(all || {}).flatMap(o => o.availablePackages || []),
-  ]
+  if (!isNative) return []
+  try {
+    const offerings = await timeout(Purchases.getOfferings())
+    const current = offerings?.current
+    const all = offerings?.all || {}
+    return [
+      ...(current?.availablePackages || []),
+      ...Object.values(all).flatMap(o => o?.availablePackages || []),
+    ]
+  } catch (e) {
+    console.error('Erro ao buscar offerings:', e)
+    return []
+  }
 }
 
-// Preços localizados vindos da App Store (a Apple exige mostrar o preço da loja)
 export async function getPrices() {
   if (!isNative) return {}
   const list = await packages()
   const out = {}
   for (const k of Object.keys(PRODUCT_IDS)) {
-    const p = list.find(x => x.product.identifier === PRODUCT_IDS[k])
-    if (p) out[k] = p.product.priceString
+    const p = list.find(x => x?.product?.identifier === PRODUCT_IDS[k])
+    if (p?.product?.priceString) {
+      out[k] = p.product.priceString
+    }
   }
   return out
 }
 
 export async function purchasePlan(plan) {
+  if (!isNative) throw new Error('NOT_NATIVE')
   const list = await packages()
-  const pkg = list.find(x => x.product.identifier === PRODUCT_IDS[plan])
+  const pkg = list.find(x => x?.product?.identifier === PRODUCT_IDS[plan])
   if (!pkg) throw new Error('NO_PACKAGE')
   const { customerInfo } = await Purchases.purchasePackage({ aPackage: pkg })
   return customerInfo
 }
 
 export async function restorePurchases() {
+  if (!isNative) throw new Error('NOT_NATIVE')
   const { customerInfo } = await timeout(Purchases.restorePurchases(), 15000)
   return customerInfo
 }
 
-// A Apple não permite cancelar dentro do app: abre a tela oficial de assinaturas
 export async function manageSubscription() {
-  if (!isNative) { window.open(MANAGE_URL, '_blank'); return }
-  try { await Purchases.showManageSubscriptions() }
-  catch { window.open(MANAGE_URL, '_blank') }
+  if (!isNative) {
+    window.open(MANAGE_URL, '_blank')
+    return
+  }
+  try {
+    await Purchases.showManageSubscriptions()
+  } catch {
+    window.open(MANAGE_URL, '_blank')
+  }
 }
