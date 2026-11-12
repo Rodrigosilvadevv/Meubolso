@@ -1,10 +1,28 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createClient } from '@supabase/supabase-js'
+import { App as CapApp } from '@capacitor/app'
+import { authStorage, isNative, makeOauth, makeEnablePush, makeRemovePushToken } from './nativeAuth'
 
-// Sessão no localStorage (login salvo). Só o token fica no aparelho, nunca a senha.
+// Sessão salva no aparelho (no iOS usa Preferences, que não é apagado pelo sistema).
+// Só o token fica guardado, nunca a senha. O usuário só sai ao tocar em "Sair".
 export const sb = createClient(import.meta.env.VITE_SUPABASE_URL, import.meta.env.VITE_SUPABASE_ANON_KEY, {
-  auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true, storageKey: 'bolso:auth' },
+  auth: {
+    storage: isNative ? authStorage : window.localStorage,
+    persistSession: true,
+    autoRefreshToken: true,
+    detectSessionInUrl: !isNative,
+    storageKey: 'bolso:auth',
+  },
 })
+
+// No app nativo, renova o token só enquanto o app está aberto
+if (isNative) {
+  sb.auth.startAutoRefresh()
+  CapApp.addListener('appStateChange', ({ isActive }) => {
+    if (isActive) sb.auth.startAutoRefresh()
+    else sb.auth.stopAutoRefresh()
+  })
+}
 
 const q = new URLSearchParams(location.search)
 if (q.get('ref')) localStorage.setItem('bolso:ref', q.get('ref'))
@@ -23,7 +41,10 @@ const normTel = t => {
   return d
 }
 const fakeEmail = tel => `${normTel(tel)}@tel.meubolso.app`
-export const oauth = provider => sb.auth.signInWithOAuth({ provider, options: { redirectTo: location.origin } })
+
+// Google/Apple: login nativo no iOS (signInWithIdToken) e OAuth normal no navegador
+export const oauth = makeOauth(sb)
+
 export const signUpPhone = async (name, tel, pass) => {
   const r = await sb.auth.signUp({ email: fakeEmail(tel), password: pass, options: { data: { name, phone: tel } } })
   // Sem sessão e sem erro = o Supabase ainda exige confirmação de e-mail (o e-mail é falso e nunca chega).
@@ -31,6 +52,9 @@ export const signUpPhone = async (name, tel, pass) => {
   return r
 }
 export const signInPhone = (tel, pass) => sb.auth.signInWithPassword({ email: fakeEmail(tel), password: pass })
+
+const enableNativePush = makeEnablePush(sb)
+const removeNativePushToken = makeRemovePushToken(sb)
 
 export function useCloud() {
   const [session, setSession] = useState(undefined)
@@ -50,7 +74,19 @@ export function useCloud() {
     return () => sub.subscription.unsubscribe()
   }, [load])
   const status = session === undefined || (session && loadedFor !== session.user.id) ? 'loading' : !session ? 'out' : active(profile) ? 'in' : 'locked'
-  const leave = async () => { try { await sb.auth.signOut() } catch {} localStorage.removeItem('bolso:v1'); location.reload() }
+
+  // iOS: a cada abertura com o usuário logado, registra o aparelho para notificações
+  // (se a permissão ainda não foi pedida, o iOS mostra o pedido; se negada, ignora)
+  useEffect(() => {
+    if (isNative && session?.user) enableNativePush(session.user).catch(() => {})
+  }, [session?.user?.id])
+
+  const leave = async () => {
+    try { await removeNativePushToken(session?.user) } catch {}
+    try { await sb.auth.signOut() } catch {}
+    localStorage.removeItem('bolso:v1')
+    location.reload()
+  }
   return { status, user: session?.user, profile, profileErr, refresh: () => load(session), logout: leave }
 }
 
@@ -82,6 +118,10 @@ export function useSync(s, setS, on, user, profile) {
 }
 
 export async function enablePush(user) {
+  // iOS nativo (Capacitor): salva o token do APNs na tabela push_tokens
+  if (isNative) return enableNativePush(user)
+
+  // Navegador / PWA: Web Push com VAPID
   if (!('serviceWorker' in navigator) || !('PushManager' in window)) throw new Error('unsupported')
   if ((await Notification.requestPermission()) !== 'granted') throw new Error('denied')
   const reg = await navigator.serviceWorker.register('/sw.js')
