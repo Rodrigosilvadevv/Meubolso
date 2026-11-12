@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: meu-bolso
+    runtime: static
+    buildCommand: npm ci && npm run build
+    staticPublishPath: dist
+    envVars:
+      - key: VITE_SUPABASE_URL
+        sync: false
+      - key: VITE_SUPABASE_ANON_KEY
+        sync: false
+      - key: VITE_VAPID_PUBLIC_KEY
+        sync: false
