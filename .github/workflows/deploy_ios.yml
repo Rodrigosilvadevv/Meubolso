@@ -62,9 +62,9 @@ jobs:
       - name: Configure iOS Capabilities
         run: |
           cat > ios/App/App/App.entitlements <<'EOF'
-          <?xml version="1.0.1" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0.1//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0.1">
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
           <dict>
             <key>aps-environment</key>
             <string>production</string>
@@ -153,15 +153,15 @@ jobs:
             DEVELOPMENT_TEAM="$TEAM_ID" \
             PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID" \
             CODE_SIGN_ENTITLEMENTS=App/App.entitlements \
-            CURRENT_PROJECT_VERSION="${{ github.run_number }}" \
+            CURRENT_PROJECT_VERSION="${{ github.run_number }}.${{ github.run_attempt }}" \
             archive
 
       - name: Export and Upload to TestFlight
         run: |
           cat > "$RUNNER_TEMP/ExportOptions.plist" <<EOF
-          <?xml version="1.0.1" encoding="UTF-8"?>
+          <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0.1">
+          <plist version="1.0">
           <dict>
             <key>method</key>
             <string>app-store-connect</string>

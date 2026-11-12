@@ -2,9 +2,14 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { createClient } from '@supabase/supabase-js'
 import { App as CapApp } from '@capacitor/app'
 import { authStorage, isNative, makeOauth, makeEnablePush, makeRemovePushToken } from './nativeAuth.js'
+
+// Pega só a primeira palavra e remove um "NOME=" no começo.
+// Protege contra texto extra colado no secret ou no .env (ex.: "eyJ... VITE_VAPID_PUBLIC_KEY=...").
+const clean = v => String(v || '').trim().split(/\s+/)[0].replace(/^[A-Z_]+=/, '')
+
 // Sessão salva no aparelho (no iOS usa Preferences, que não é apagado pelo sistema).
 // Só o token fica guardado, nunca a senha. O usuário só sai ao tocar em "Sair".
-export const sb = createClient(import.meta.env.VITE_SUPABASE_URL, import.meta.env.VITE_SUPABASE_ANON_KEY, {
+export const sb = createClient(clean(import.meta.env.VITE_SUPABASE_URL), clean(import.meta.env.VITE_SUPABASE_ANON_KEY), {
   auth: {
     storage: isNative ? authStorage : window.localStorage,
     persistSession: true,
@@ -125,7 +130,7 @@ export async function enablePush(user) {
   if ((await Notification.requestPermission()) !== 'granted') throw new Error('denied')
   const reg = await navigator.serviceWorker.register('/sw.js')
   await navigator.serviceWorker.ready
-  const key = import.meta.env.VITE_VAPID_PUBLIC_KEY
+  const key = clean(import.meta.env.VITE_VAPID_PUBLIC_KEY)
   const raw = atob(key.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(key.length / 4) * 4, '='))
   const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: Uint8Array.from(raw, c => c.charCodeAt(0)) })
   const j = sub.toJSON()
