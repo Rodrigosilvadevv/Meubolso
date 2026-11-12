@@ -53,6 +53,19 @@ export const makeOauth = sb => async provider => {
   }
 }
 
+// Salva o token no banco. A função RPC reatribui o token ao usuário logado mesmo que ele
+// já pertença a outra conta (troca de conta no mesmo aparelho). Sem a RPC, cai no upsert direto.
+const saveToken = async (sb, user, token) => {
+  const platform = Capacitor.getPlatform()
+  const { error } = await sb.rpc('save_push_token', { p_token: token, p_platform: platform })
+  if (!error) return
+  const { error: e2 } = await sb.from(TOKENS).upsert(
+    { user_id: user.id, token, platform, updated_at: new Date().toISOString() },
+    { onConflict: 'token' }
+  )
+  if (e2) console.error(`${TOKENS}:`, e2.message)
+}
+
 // ---------- Push iOS: salva o token APNs na tabela bolso_push_tokens ----------
 export const makeEnablePush = sb => async user => {
   if (!isNative) throw new Error('unsupported')
@@ -61,13 +74,7 @@ export const makeEnablePush = sb => async user => {
   if (perm.receive !== 'granted') throw new Error('denied')
 
   await PushNotifications.removeAllListeners()
-  await PushNotifications.addListener('registration', async t => {
-    const { error } = await sb.from(TOKENS).upsert(
-      { user_id: user.id, token: t.value, platform: Capacitor.getPlatform(), updated_at: new Date().toISOString() },
-      { onConflict: 'token' }
-    )
-    if (error) console.error(`${TOKENS}:`, error.message)
-  })
+  await PushNotifications.addListener('registration', t => saveToken(sb, user, t.value))
   await PushNotifications.addListener('registrationError', e => console.error('Push erro:', e))
   await PushNotifications.register()
 }

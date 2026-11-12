@@ -131,10 +131,15 @@ export function useCloud() {
         const stop = await watchPurchases(merge)
         if (dead) stop(); else off = stop
       } catch (e) { console.warn('purchases:', e?.message) }
-      // registra o token APNs já com usuário logado
-      if (isNative) makeEnablePush(sb)(user).catch(() => {})
     })()
     return () => { dead = true; off() }
+  }, [user?.id])
+
+  // Login ou criação de conta: assim que há usuário, pede permissão e já salva o token de push.
+  // Roda separado do RevenueCat para não depender dele. Também roda a cada abertura do app.
+  useEffect(() => {
+    if (!user || !isNative) return
+    makeEnablePush(sb)(user).catch(e => console.warn('push:', e?.message))
   }, [user?.id])
 
   const buy = async plan => {
