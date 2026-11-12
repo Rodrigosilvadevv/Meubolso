@@ -33,11 +33,20 @@ jobs:
 
       - name: Build Web Assets
         env:
-          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
-          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
-          VITE_VAPID_PUBLIC_KEY: ${{ secrets.VITE_VAPID_PUBLIC_KEY }}
+          RAW_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          RAW_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+          RAW_VAPID_PUBLIC_KEY: ${{ secrets.VITE_VAPID_PUBLIC_KEY }}
           VITE_PUBLIC_URL: https://meubolso-bhn2.onrender.com
-        run: npm run build
+        run: |
+          # Pega só a primeira palavra do secret e remove um "NOME=" no começo,
+          # caso tenha vindo texto extra colado junto do valor
+          clean() { printf '%s' "$1" | awk 'NF{print $1; exit}' | sed -E 's/^[A-Za-z_]+=//'; }
+          export VITE_SUPABASE_URL="$(clean "$RAW_SUPABASE_URL")"
+          export VITE_SUPABASE_ANON_KEY="$(clean "$RAW_SUPABASE_ANON_KEY")"
+          export VITE_VAPID_PUBLIC_KEY="$(clean "$RAW_VAPID_PUBLIC_KEY")"
+          echo "anon key: ${#VITE_SUPABASE_ANON_KEY} caracteres, começa com ${VITE_SUPABASE_ANON_KEY:0:3} (esperado ~200+ e eyJ)"
+          echo "url do Supabase: ${#VITE_SUPABASE_URL} caracteres, começa com ${VITE_SUPABASE_URL:0:8} (esperado https://)"
+          npm run build
 
       - name: Generate iOS App Icons
         run: |
