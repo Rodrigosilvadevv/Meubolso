@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { sb, oauth, signUpPhone, signInPhone, enablePush, isPlus } from './cloud'
+import { isNative } from './nativeAuth.js'
 import { Indique } from './Extras'
 
 const Policy = () => <a href="/privacidade.html" target="_blank" rel="noreferrer">Política de Privacidade e LGPD</a>
@@ -9,6 +10,15 @@ export function Auth() {
   const [ok, setOk] = useState(false), [err, setErr] = useState(''), [busy, setBusy] = useState(false)
   const ref = localStorage.getItem('bolso:ref')
   const need = () => ok || (setErr('Aceite a Política de Privacidade para continuar.'), false)
+
+  const social = async provider => {
+    if (!need()) return
+    setErr(''); setBusy(true)
+    const { error, cancelled } = await oauth(provider)
+    setBusy(false)
+    if (error && !cancelled) setErr(`Não foi possível entrar: ${error.message || error}`)
+  }
+
   const go = async e => {
     e.preventDefault(); setErr('')
     if (mode === 'up' && !need()) return
@@ -40,9 +50,8 @@ export function Auth() {
       <section className="box">
         <div className="seg">{[['in', 'Entrar'], ['up', 'Criar conta']].map(([k, l]) => <button key={k} className={mode === k ? 'on' : ''} onClick={() => setMode(k)}>{l}</button>)}</div>
         {ref && <p className="good">Você veio por indicação: 30 dias grátis ao criar a conta.</p>}
-        <button className="ghost" onClick={() => need() && oauth('google')}>Continuar com Google</button>
-        <button className="ghost" onClick={() => need() && oauth('apple')}>Continuar com Apple</button>
-        <p className="muted">ou com telefone e senha</p>
+        {isNative && <button className="ghost" disabled={busy} onClick={() => social('apple')}>Continuar com Apple</button>}
+        {isNative && <p className="muted">ou com telefone e senha</p>}
         <form className="form" onSubmit={go}>
           {mode === 'up' && <input placeholder="Seu nome" autoComplete="name" value={f.name} onChange={e => setF({ ...f, name: e.target.value })} />}
           <input type="tel" inputMode="tel" autoComplete="tel" placeholder="Telefone com DDD" value={f.tel} onChange={e => setF({ ...f, tel: e.target.value })} />
@@ -143,7 +152,8 @@ export function Visual({ s, set, say, onExit }) {
       </section>
       <section>
         <h2>Avisos e privacidade</h2>
-        {perm === 'unsupported' ? <p className="muted">Este navegador não oferece avisos no aparelho.</p>
+        {isNative ? <p className="muted">Ative os avisos do aparelho em Minha conta.</p>
+          : perm === 'unsupported' ? <p className="muted">Este navegador não oferece avisos no aparelho.</p>
           : perm === 'granted' ? <p className="muted">Avisos ativos: você recebe o principal alerta do dia ao abrir o app.</p>
           : <button className="ghost" onClick={ask}>Ativar avisos no aparelho</button>}
         <button className="ghost" onClick={() => set({ hide: !s.hide })}>{s.hide ? 'Mostrar valores' : 'Ocultar valores'}</button>

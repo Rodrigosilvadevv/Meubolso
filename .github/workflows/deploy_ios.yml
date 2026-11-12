@@ -36,6 +36,7 @@ jobs:
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
           VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
           VITE_VAPID_PUBLIC_KEY: ${{ secrets.VITE_VAPID_PUBLIC_KEY }}
+          VITE_PUBLIC_URL: https://meubolso-bhn2.onrender.com
         run: npm run build
 
       # Ícone do app: coloque um PNG 1024x1024 SEM transparência em assets/icon-only.png
@@ -50,10 +51,8 @@ jobs:
       - name: Capacitor Sync iOS
         run: npx cap sync ios
 
-      # Capacidades nativas (como o Xcode faria): Apple Login, Push, Background e URL do Google
+      # Capacidades nativas (como o Xcode faria): Apple Login, Push e Background
       - name: Configure iOS Capabilities
-        env:
-          GOOGLE_REVERSED_CLIENT_ID: ${{ secrets.GOOGLE_IOS_REVERSED_CLIENT_ID }}
         run: |
           cat > ios/App/App/App.entitlements <<'EOF'
           <?xml version="1.0" encoding="UTF-8"?>
@@ -76,13 +75,6 @@ jobs:
           $PB -c "Add :UIBackgroundModes array" "$PLIST" || true
           $PB -c "Add :UIBackgroundModes:0 string remote-notification" "$PLIST" || true
           $PB -c "Add :ITSAppUsesNonExemptEncryption bool false" "$PLIST" || true
-
-          if [ -n "$GOOGLE_REVERSED_CLIENT_ID" ]; then
-            $PB -c "Add :CFBundleURLTypes array" "$PLIST" || true
-            $PB -c "Add :CFBundleURLTypes:0 dict" "$PLIST" || true
-            $PB -c "Add :CFBundleURLTypes:0:CFBundleURLSchemes array" "$PLIST" || true
-            $PB -c "Add :CFBundleURLTypes:0:CFBundleURLSchemes:0 string $GOOGLE_REVERSED_CLIENT_ID" "$PLIST" || true
-          fi
 
           cat "$PLIST"
 

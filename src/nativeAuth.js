@@ -3,11 +3,6 @@ import { Preferences } from '@capacitor/preferences'
 import { PushNotifications } from '@capacitor/push-notifications'
 import { SocialLogin } from '@capgo/capacitor-social-login'
 
-// ====== TROQUE ESTES 2 VALORES (Google Cloud Console) ======
-const GOOGLE_WEB_CLIENT_ID = 'SEU_WEB_CLIENT_ID.apps.googleusercontent.com'
-const GOOGLE_IOS_CLIENT_ID = 'SEU_IOS_CLIENT_ID.apps.googleusercontent.com'
-// ===========================================================
-
 export const isNative = Capacitor.isNativePlatform()
 
 // Sessão persistente no iOS (não é apagada pelo sistema)
@@ -17,53 +12,22 @@ export const authStorage = {
   removeItem: async k => { await Preferences.remove({ key: k }) },
 }
 
-// ---------- Nonce (Google + Supabase) ----------
-const randomNonce = () => {
-  const a = new Uint8Array(32)
-  crypto.getRandomValues(a)
-  return Array.from(a, b => b.toString(16).padStart(2, '0')).join('')
-}
-const sha256Hex = async str => {
-  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str))
-  return Array.from(new Uint8Array(buf), b => b.toString(16).padStart(2, '0')).join('')
-}
-
-// ---------- Inicialização única do plugin ----------
+// ---------- Login com Apple (nativo no iOS) ----------
 let initPromise = null
 const initSocial = () => {
   if (!initPromise) {
     initPromise = SocialLogin.initialize({
-      google: { webClientId: GOOGLE_WEB_CLIENT_ID, iOSClientId: GOOGLE_IOS_CLIENT_ID, mode: 'online' },
       apple: {}, // iOS usa o login nativo da Apple (Bundle ID)
     }).catch(e => { initPromise = null; throw e })
   }
   return initPromise
 }
 
-const googleNative = async (sb, retry = true) => {
-  await initSocial()
-  const raw = randomNonce()
-  const digest = await sha256Hex(raw)
-  const res = await SocialLogin.login({
-    provider: 'google',
-    options: { scopes: ['email', 'profile'], nonce: digest }, // Google recebe o HASH
-  })
-  const g = res.result
-  if (!g || g.responseType !== 'online' || !g.idToken) return { error: new Error('Google não retornou o token.') }
-  const out = await sb.auth.signInWithIdToken({ provider: 'google', token: g.idToken, nonce: raw }) // Supabase recebe o ORIGINAL
-  // Token em cache pode causar erro de nonce: sai do Google e tenta 1 vez de novo
-  if (out.error && retry && /nonce/i.test(out.error.message || '')) {
-    try { await SocialLogin.logout({ provider: 'google' }) } catch {}
-    return googleNative(sb, false)
-  }
-  return out
-}
-
 const appleNative = async sb => {
   await initSocial()
   const res = await SocialLogin.login({ provider: 'apple', options: { scopes: ['email', 'name'] } })
   const idToken = res.result?.idToken
-  if (!idToken) return { error: new Error('Apple não retornou o token.') }
+  if (!idToken) return { error: new Error('A Apple não retornou o token.') }
   const out = await sb.auth.signInWithIdToken({ provider: 'apple', token: idToken })
   // A Apple só envia o nome na primeira vez: guarda agora
   const p = res.result?.profile
@@ -72,17 +36,16 @@ const appleNative = async sb => {
   return out
 }
 
-// Login social: nativo no iOS, OAuth normal no navegador
+// Nativo no iOS; no navegador usa o OAuth normal
 export const makeOauth = sb => async provider => {
   if (!isNative) {
     return sb.auth.signInWithOAuth({ provider, options: { redirectTo: window.location.origin } })
   }
   try {
     if (provider === 'apple') return await appleNative(sb)
-    if (provider === 'google') return await googleNative(sb)
-    return { error: new Error('Provedor não suportado.') }
+    return { error: new Error('Esse tipo de login ainda não está disponível.') }
   } catch (e) {
-    if (e?.code === 'USER_CANCELLED' || /cancel|1001|12501/i.test(e?.message || String(e))) return { error: null, cancelled: true }
+    if (e?.code === 'USER_CANCELLED' || /cancel|1001/i.test(e?.message || String(e))) return { error: null, cancelled: true }
     return { error: e }
   }
 }
