@@ -1,5 +1,5 @@
 {
-  "appId": "app.meubolso.bolso",
+  "appId": "com.meubolso.bolso",
   "appName": "Meu bolso",
   "webDir": "dist",
   "ios": {
