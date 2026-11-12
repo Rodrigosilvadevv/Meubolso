@@ -38,14 +38,10 @@ jobs:
           RAW_VAPID_PUBLIC_KEY: ${{ secrets.VITE_VAPID_PUBLIC_KEY }}
           VITE_PUBLIC_URL: https://meubolso-bhn2.onrender.com
         run: |
-          # Pega só a primeira palavra do secret e remove um "NOME=" no começo,
-          # caso tenha vindo texto extra colado junto do valor
           clean() { printf '%s' "$1" | awk 'NF{print $1; exit}' | sed -E 's/^[A-Za-z_]+=//'; }
           export VITE_SUPABASE_URL="$(clean "$RAW_SUPABASE_URL")"
           export VITE_SUPABASE_ANON_KEY="$(clean "$RAW_SUPABASE_ANON_KEY")"
           export VITE_VAPID_PUBLIC_KEY="$(clean "$RAW_VAPID_PUBLIC_KEY")"
-          echo "anon key: ${#VITE_SUPABASE_ANON_KEY} caracteres, começa com ${VITE_SUPABASE_ANON_KEY:0:3} (esperado ~200+ e eyJ)"
-          echo "url do Supabase: ${#VITE_SUPABASE_URL} caracteres, começa com ${VITE_SUPABASE_URL:0:8} (esperado https://)"
           npm run build
 
       - name: Generate iOS App Icons
@@ -59,7 +55,7 @@ jobs:
       - name: Capacitor Sync iOS
         run: npx cap sync ios
 
-      - name: Configure iOS Capabilities
+      - name: Configure iOS Capabilities and Version 1.0.3
         run: |
           cat > ios/App/App/App.entitlements <<'EOF'
           <?xml version="1.0" encoding="UTF-8"?>
@@ -83,6 +79,10 @@ jobs:
           $PB -c "Add :UIBackgroundModes:0 string remote-notification" "$PLIST" || true
           $PB -c "Add :ITSAppUsesNonExemptEncryption bool false" "$PLIST" || true
 
+          # Força a versão pública para 1.0.3 e o build number dinâmico por tentativa
+          $PB -c "Set :CFBundleShortVersionString 1.0.3" "$PLIST" || $PB -c "Add :CFBundleShortVersionString string 1.0.3" "$PLIST"
+          $PB -c "Set :CFBundleVersion ${{ github.run_number }}.${{ github.run_attempt }}" "$PLIST" || true
+
           cat "$PLIST"
 
       - name: Prepare App Store Connect API Key
@@ -94,7 +94,6 @@ jobs:
           mkdir -p "$RUNNER_TEMP/keys"
           P8="$RUNNER_TEMP/keys/AuthKey.p8"
 
-          # Aceita o .p8 em texto puro ou em base64
           if printf '%s' "$API_KEY_P8" | grep -q 'BEGIN PRIVATE KEY'; then
             printf '%s\n' "$API_KEY_P8" > "$P8"
           else
@@ -102,40 +101,26 @@ jobs:
           fi
           chmod 600 "$P8"
 
-          # Remove espaços e quebras de linha que tenham vindo nos secrets
           KEY_ID=$(printf %s "$RAW_KEY_ID" | tr -d '[:space:]')
           ISSUER_ID=$(printf %s "$RAW_ISSUER_ID" | tr -d '[:space:]')
           echo "KEY_ID=$KEY_ID" >> "$GITHUB_ENV"
           echo "ISSUER_ID=$ISSUER_ID" >> "$GITHUB_ENV"
 
-          echo "Tamanhos originais: key=${#RAW_KEY_ID} (esperado 10), issuer=${#RAW_ISSUER_ID} (esperado 36)"
-          echo "p8 com BEGIN PRIVATE KEY: $(grep -c 'BEGIN PRIVATE KEY' "$P8") (esperado 1)"
+      - name: Limpar certificados antigos e revogar/recriar assinatura a cada build
+        env:
+          KEY_ID: ${{ env.KEY_ID }}
+          ISSUER_ID: ${{ env.ISSUER_ID }}
+        run: |
+          # Limpa o keychain local para garantir que um novo certificado seja solicitado e gerado do zero a cada execução
+          security default-keychain -s login.keychain || true
+          security delete-keychain ios_build.keychain || true
+          security create-keychain -p "" ios_build.keychain
+          security default-keychain -s ios_build.keychain
+          security unlock-keychain -p "" ios_build.keychain
+          security set-keychain-settings -t 3600 -l ios_build.keychain
 
-          # Diagnóstico: mostra Key ID e Issuer ID espaçados (o GitHub não mascara assim)
-          # e a impressão digital da chave PÚBLICA do .p8 (não revela a chave privada)
-          echo "Key ID no secret:    $(printf %s "$KEY_ID" | sed 's/./& /g')"
-          echo "Issuer ID no secret: $(printf %s "$ISSUER_ID" | sed 's/./& /g')"
-          echo "Impressão digital do .p8: $(openssl pkey -in "$P8" -pubout | openssl dgst -sha256)"
-
-          # Testa as credenciais direto na API da Apple antes de compilar
-          export KEY_ID ISSUER_ID
-          python3 -m venv /tmp/v
-          /tmp/v/bin/pip -q install pyjwt cryptography
-          TOKEN=$(/tmp/v/bin/python - <<'PY'
-          import jwt, time, os
-          k = open(os.environ["RUNNER_TEMP"] + "/keys/AuthKey.p8").read()
-          now = int(time.time())
-          print(jwt.encode(
-              {"iss": os.environ["ISSUER_ID"], "iat": now, "exp": now + 600, "aud": "appstoreconnect-v1"},
-              k, algorithm="ES256", headers={"kid": os.environ["KEY_ID"]}))
-          PY
-          )
-          CODE=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" "https://api.appstoreconnect.apple.com/v1/apps?limit=1")
-          echo "API da Apple respondeu HTTP $CODE"
-          if [ "$CODE" != "200" ]; then
-            echo "::error::Credenciais da Apple inválidas (HTTP $CODE). Confira Key ID, Issuer ID e o .p8 da mesma chave."
-            exit 1
-          fi
+          # Remove perfis de provisionamento locais antigos do runner
+          rm -rf ~/Library/MobileDevice/Provisioning\ Profiles/*
 
       - name: Archive (assinatura automática pela API da Apple)
         run: |
