@@ -11,7 +11,7 @@ jobs:
 
     env:
       BUNDLE_ID: com.meubolso.bolso
-      TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      TEAM_ID: 882XKXMS4F
 
     steps:
       - name: Checkout Repository
@@ -79,15 +79,50 @@ jobs:
       - name: Prepare App Store Connect API Key
         env:
           API_KEY_P8: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
+          RAW_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          RAW_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
         run: |
           mkdir -p "$RUNNER_TEMP/keys"
-          printf '%s' "$API_KEY_P8" > "$RUNNER_TEMP/keys/AuthKey.p8"
-          chmod 600 "$RUNNER_TEMP/keys/AuthKey.p8"
+          P8="$RUNNER_TEMP/keys/AuthKey.p8"
+
+          # Aceita o .p8 em texto puro ou em base64
+          if printf '%s' "$API_KEY_P8" | grep -q 'BEGIN PRIVATE KEY'; then
+            printf '%s\n' "$API_KEY_P8" > "$P8"
+          else
+            printf '%s' "$API_KEY_P8" | tr -d '[:space:]' | base64 --decode > "$P8"
+          fi
+          chmod 600 "$P8"
+
+          # Remove espaços e quebras de linha que tenham vindo nos secrets
+          KEY_ID=$(printf %s "$RAW_KEY_ID" | tr -d '[:space:]')
+          ISSUER_ID=$(printf %s "$RAW_ISSUER_ID" | tr -d '[:space:]')
+          echo "KEY_ID=$KEY_ID" >> "$GITHUB_ENV"
+          echo "ISSUER_ID=$ISSUER_ID" >> "$GITHUB_ENV"
+
+          echo "Tamanhos originais: key=${#RAW_KEY_ID} (esperado 10), issuer=${#RAW_ISSUER_ID} (esperado 36)"
+          echo "p8 com BEGIN PRIVATE KEY: $(grep -c 'BEGIN PRIVATE KEY' "$P8") (esperado 1)"
+
+          # Testa as credenciais direto na API da Apple antes de compilar
+          export KEY_ID ISSUER_ID
+          python3 -m venv /tmp/v
+          /tmp/v/bin/pip -q install pyjwt cryptography
+          TOKEN=$(/tmp/v/bin/python - <<'PY'
+          import jwt, time, os
+          k = open(os.environ["RUNNER_TEMP"] + "/keys/AuthKey.p8").read()
+          now = int(time.time())
+          print(jwt.encode(
+              {"iss": os.environ["ISSUER_ID"], "iat": now, "exp": now + 600, "aud": "appstoreconnect-v1"},
+              k, algorithm="ES256", headers={"kid": os.environ["KEY_ID"]}))
+          PY
+          )
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" "https://api.appstoreconnect.apple.com/v1/apps?limit=1")
+          echo "API da Apple respondeu HTTP $CODE"
+          if [ "$CODE" != "200" ]; then
+            echo "::error::Credenciais da Apple inválidas (HTTP $CODE). Confira Key ID, Issuer ID e o .p8 da mesma chave."
+            exit 1
+          fi
 
       - name: Archive (assinatura automática pela API da Apple)
-        env:
-          KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
-          ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
         run: |
           xcodebuild \
             -project ios/App/App.xcodeproj \
@@ -107,9 +142,6 @@ jobs:
             archive
 
       - name: Export and Upload to TestFlight
-        env:
-          KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
-          ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
         run: |
           cat > "$RUNNER_TEMP/ExportOptions.plist" <<EOF
           <?xml version="1.0" encoding="UTF-8"?>
