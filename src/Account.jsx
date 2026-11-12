@@ -50,13 +50,13 @@ export function Auth() {
       <section className="box">
         <div className="seg">{[['in', 'Entrar'], ['up', 'Criar conta']].map(([k, l]) => <button key={k} className={mode === k ? 'on' : ''} onClick={() => setMode(k)}>{l}</button>)}</div>
         {ref && <p className="good">Você veio por indicação: 30 dias grátis ao criar a conta.</p>}
-        {isNative && <button className="ghost" disabled={busy} onClick={() => social('apple')}>Continuar com Apple</button>}
-        {isNative && <p className="muted">ou com telefone e senha</p>}
+        <button className="ghost" disabled={busy} onClick={() => social('apple')}>Continuar com Apple</button>
+        <p className="muted">ou com telefone e senha</p>
         <form className="form" onSubmit={go}>
           {mode === 'up' && <input placeholder="Seu nome" autoComplete="name" value={f.name} onChange={e => setF({ ...f, name: e.target.value })} />}
           <input type="tel" inputMode="tel" autoComplete="tel" placeholder="Telefone com DDD" value={f.tel} onChange={e => setF({ ...f, tel: e.target.value })} />
           <input type="password" autoComplete={mode === 'up' ? 'new-password' : 'current-password'} placeholder="Senha (8 ou mais caracteres)" value={f.pass} onChange={e => setF({ ...f, pass: e.target.value })} />
-          <label className="chk"><input type="checkbox" checked={ok} onChange={e => setOk(e.target.checked)} />Li e aceito a&nbsp;<Policy /></label>
+          <label className="chk"><input type="checkbox" checked={ok} onChange={e => setOk(e.target.checked)} />Li e aceito a <Policy /></label>
           <p className="err" role="alert">{err}</p>
           <button className="cta" disabled={busy}>{mode === 'up' ? 'Criar conta' : 'Entrar'}</button>
         </form>
