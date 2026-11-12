@@ -117,7 +117,7 @@ export function useCloud() {
 
   // Depois do login: configura RevenueCat, sincroniza o plano e registra o token de push
   useEffect(() => {
-    if (!user) return
+    if (!user || !isNative) return
     let off = () => {}
     let dead = false
     const merge = info => {
@@ -166,7 +166,7 @@ export function useCloud() {
   const logout = async () => {
     try { await makeRemovePushToken(sb)(user) } catch {}
     try { await resetPurchases() } catch {}
-    await sb.auth.signOut()
+    try { await sb.auth.signOut({ scope: 'local' }) } catch {}
     setUser(null)
     setProfile(null)
     setStatus('out')
