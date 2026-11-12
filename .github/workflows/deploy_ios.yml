@@ -39,7 +39,6 @@ jobs:
           VITE_PUBLIC_URL: https://meubolso-bhn2.onrender.com
         run: npm run build
 
-      # Ícone do app: coloque um PNG 1024x1024 SEM transparência em assets/icon-only.png
       - name: Generate iOS App Icons
         run: |
           if [ -f assets/icon-only.png ]; then
@@ -51,7 +50,6 @@ jobs:
       - name: Capacitor Sync iOS
         run: npx cap sync ios
 
-      # Capacidades nativas (como o Xcode faria): Apple Login, Push e Background
       - name: Configure iOS Capabilities
         run: |
           cat > ios/App/App/App.entitlements <<'EOF'
@@ -80,10 +78,11 @@ jobs:
 
       - name: Prepare App Store Connect API Key
         env:
-          API_KEY_P8: ${{ secrets.APP_STORE_CONNECT_API_KEY }}
+          API_KEY_P8: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
         run: |
           mkdir -p "$RUNNER_TEMP/keys"
           printf '%s' "$API_KEY_P8" > "$RUNNER_TEMP/keys/AuthKey.p8"
+          chmod 600 "$RUNNER_TEMP/keys/AuthKey.p8"
 
       - name: Archive (assinatura automática pela API da Apple)
         env:
