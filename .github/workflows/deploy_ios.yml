@@ -87,6 +87,36 @@ jobs:
 
           cat "$PLIST"
 
+      - name: Push iOS - AppDelegate (repassa o token da Apple ao Capacitor)
+        run: |
+          python3 - <<'PY'
+          import pathlib, sys
+
+          p = pathlib.Path('ios/App/App/AppDelegate.swift')
+          src = p.read_text()
+
+          if 'capacitorDidRegisterForRemoteNotifications' not in src:
+              methods = '''
+              // Repassa o token de push da Apple para o plugin do Capacitor
+              func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+                  NotificationCenter.default.post(name: .capacitorDidRegisterForRemoteNotifications, object: deviceToken)
+              }
+
+              func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
+                  NotificationCenter.default.post(name: .capacitorDidFailToRegisterForRemoteNotifications, object: error)
+              }
+          '''
+              last = src.rstrip().rfind('}')   # chave que fecha a classe AppDelegate
+              p.write_text(src[:last].rstrip() + '\n' + methods + '}\n')
+
+          if 'capacitorDidRegisterForRemoteNotifications' not in p.read_text():
+              sys.exit('ERRO: não consegui adicionar os métodos de push no AppDelegate.swift')
+          print('AppDelegate pronto para push')
+          PY
+
+          echo "---- fim do AppDelegate.swift ----"
+          tail -15 ios/App/App/AppDelegate.swift
+
       - name: Prepare App Store Connect API Key
         env:
           API_KEY_P8: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
@@ -142,6 +172,16 @@ jobs:
             CODE_SIGN_ENTITLEMENTS=App/App.entitlements \
             CURRENT_PROJECT_VERSION="${{ github.run_number }}.${{ github.run_attempt }}" \
             archive
+
+      - name: Verificar push no app compilado (só avisa, não bloqueia o envio)
+        run: |
+          APP="$RUNNER_TEMP/App.xcarchive/Products/Applications/App.app"
+          codesign -d --entitlements :- "$APP" 2>/dev/null | tee "$RUNNER_TEMP/entitlements.txt" || true
+          if grep -q 'aps-environment' "$RUNNER_TEMP/entitlements.txt"; then
+            echo "OK: o app compilado tem a capability de push"
+          else
+            echo "::warning::O app compilado está SEM aps-environment (push não vai funcionar)"
+          fi
 
       - name: Export and Upload to TestFlight
         run: |

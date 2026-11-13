@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@supabase/supabase-js'
 import { makeOauth, makeEnablePush, makeRemovePushToken, authStorage, isNative } from './nativeAuth.js'
 import {
@@ -65,17 +65,50 @@ export const enablePush = async user => {
 const withTimeout = (p, ms) =>
   Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))])
 
+const sleep = ms => new Promise(r => setTimeout(r, ms))
+
+// ---------- Último plano conhecido (vindo da App Store) ----------
+// Serve só para o app abrir direto, sem piscar a tela de planos. A checagem real no RevenueCat
+// roda em seguida e corrige se a assinatura tiver acabado.
+const planCacheKey = id => `bolso:plan:${id}`
+
+const readPlanCache = id => {
+  try {
+    const c = JSON.parse(localStorage.getItem(planCacheKey(id)) || 'null')
+    if (!c?.plan) return null
+    if (c.plan_until && new Date(c.plan_until) <= new Date()) return null
+    return c
+  } catch { return null }
+}
+
+const writePlanCache = (id, p) => {
+  try {
+    if (p) localStorage.setItem(planCacheKey(id), JSON.stringify(p))
+    else localStorage.removeItem(planCacheKey(id))
+  } catch {}
+}
+
 export function useCloud() {
   const [user, setUser] = useState(null)
-  const [profile, setProfile] = useState(null)
+  // Perfil que vem do Supabase
+  const [dbProfile, setDbProfile] = useState(null)
+  // Plano que vem da App Store (RevenueCat). Fica separado para o perfil do banco nunca apagá-lo.
+  const [rcPlan, setRcPlan] = useState(null)
+  // No iPhone, só decidimos entre app e tela de planos depois da primeira checagem da assinatura
+  const [entReady, setEntReady] = useState(!isNative)
   const [status, setStatus] = useState('loading')
   const [profileErr, setProfileErr] = useState('')
+
+  const profile = useMemo(
+    () => (dbProfile || rcPlan ? { ...(dbProfile || {}), ...(rcPlan || {}) } : null),
+    [dbProfile, rcPlan]
+  )
 
   const fetchProfile = async userId => {
     try {
       const { data, error } = await sb.from('bolso_profiles').select('*').eq('user_id', userId).single()
       if (error) setProfileErr(error.message)
-      else { setProfile(data); setProfileErr('') }
+      else { setDbProfile(data); setProfileErr('') }
     } catch (e) {
       setProfileErr(e.message || 'Erro ao carregar perfil')
     }
@@ -110,7 +143,9 @@ export function useCloud() {
         }, 0)
       } else {
         setUser(null)
-        setProfile(null)
+        setDbProfile(null)
+        setRcPlan(null)
+        setEntReady(!isNative)
         setStatus('out')
       }
     })
@@ -118,24 +153,43 @@ export function useCloud() {
     return () => { alive = false; subscription.unsubscribe() }
   }, [])
 
-  // Depois do login: configura RevenueCat, sincroniza o plano e registra o token de push
+  // Aplica o que o RevenueCat respondeu. Se não veio resposta (erro de rede), não mexe em nada.
+  // Se veio e não há assinatura ativa, limpa o plano guardado (assinatura acabou).
+  const applyInfo = (info, uid) => {
+    if (!info) return null
+    const p = planFromInfo(info)
+    setRcPlan(p)
+    if (uid) writePlanCache(uid, p)
+    return p
+  }
+
+  // Depois do login: configura RevenueCat, confere a assinatura e acompanha mudanças
   useEffect(() => {
     if (!user || !isNative) return
+    const uid = user.id
+
+    // Mostra de cara o último plano conhecido, para o app abrir sem passar pela tela de planos
+    const cached = readPlanCache(uid)
+    if (cached) { setRcPlan(cached); setEntReady(true) }
+
     let off = () => {}
     let dead = false
-    const merge = info => {
-      const p = planFromInfo(info)
-      if (p) setProfile(v => (v ? { ...v, ...p } : v))
-    }
+    // Se o RevenueCat demorar demais, segue em frente com o que já se sabe
+    const timer = setTimeout(() => { if (!dead) setEntReady(true) }, 6000)
+
     ;(async () => {
       try {
-        await initPurchases(user.id)
-        merge(await getCustomerInfo())
-        const stop = await watchPurchases(merge)
+        await initPurchases(uid)
+        let info = await getCustomerInfo()
+        if (!info && !dead) { await sleep(2500); info = await getCustomerInfo() }
+        if (!dead) applyInfo(info, uid)
+        const stop = await watchPurchases(i => { if (!dead) applyInfo(i, uid) })
         if (dead) stop(); else off = stop
       } catch (e) { console.warn('purchases:', e?.message) }
+      finally { if (!dead) setEntReady(true) }
     })()
-    return () => { dead = true; off() }
+
+    return () => { dead = true; clearTimeout(timer); off() }
   }, [user?.id])
 
   // Login ou criação de conta: assim que há usuário, pede permissão e já salva o token de push.
@@ -147,16 +201,11 @@ export function useCloud() {
 
   const buy = async plan => {
     const info = await purchasePlan(plan)
-    const p = planFromInfo(info)
-    if (p) setProfile(v => ({ ...v, ...p }))
+    applyInfo(info, user?.id)
     return info
   }
 
-  const restore = async () => {
-    const p = planFromInfo(await restorePurchases())
-    if (p) setProfile(v => ({ ...v, ...p }))
-    return !!p
-  }
+  const restore = async () => !!applyInfo(await restorePurchases(), user?.id)
 
   // Ajuste para a sua função/tabela de indicação, se houver
   const applyRef = async code => {
@@ -171,11 +220,16 @@ export function useCloud() {
     try { await resetPurchases() } catch {}
     try { await sb.auth.signOut({ scope: 'local' }) } catch {}
     setUser(null)
-    setProfile(null)
+    setDbProfile(null)
+    setRcPlan(null)
+    setEntReady(!isNative)
     setStatus('out')
   }
 
-  return { user, profile, status, profileErr, logout, buy, restore, applyRef }
+  // Enquanto a assinatura não foi conferida, o app mostra "Carregando…" em vez da tela de planos
+  const shownStatus = status === 'in' && !entReady ? 'loading' : status
+
+  return { user, profile, status: shownStatus, profileErr, logout, buy, restore, applyRef }
 }
 
 // Sincronização com a nuvem (ainda não implementada). O App.jsx já chama este hook.
