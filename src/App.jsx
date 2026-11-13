@@ -136,15 +136,9 @@ function useCount(v) {
 function Main() {
   const [s, setS] = useState(load)
   const cloud = useCloud()
-const locked = ok && tier === 'free'   // logado, sem plano e sem trial
-if (!ok || locked) return (
-  <div className={cls} style={sty}>
-    {cloud.status === 'loading' ? <p className="muted" style={{ padding: 40 }}>Carregando…</p>
-      : cloud.status === 'out' ? <Auth />
-      : <Paywall cloud={cloud} />}
-  </div>
-)
+  const ok = cloud.status === 'in'
   const tier = tierOf(cloud.profile)
+  const locked = ok && tier === 'free' // logado, sem plano e sem trial
   const [tab, setTab] = useState(s.salary ? 'inicio' : 'plano')
   const [sub, setSub] = useState('conta')
   const [bell, setBell] = useState(false)
@@ -169,7 +163,15 @@ if (!ok || locked) return (
   }, [ok])
 
   const cls = `app ${s.mode}`, sty = { '--h': s.hue }
-  if (!ok) return <div className={cls} style={sty}>{cloud.status === 'loading' ? <p className="muted" style={{ padding: 40 }}>Carregando…</p> : cloud.status === 'out' ? <Auth /> : <Paywall cloud={cloud} />}</div>
+  if (!ok || locked) {
+    return (
+      <div className={cls} style={sty}>
+        {cloud.status === 'loading' ? <p className="muted" style={{ padding: 40 }}>Carregando…</p>
+          : cloud.status === 'out' ? <Auth />
+          : <Paywall cloud={cloud} />}
+      </div>
+    )
+  }
 
   const first = (cloud.profile?.name || 'Você').split(' ')[0], hr = new Date().getHours()
   const props = { s, set, P, A, m, go, say }
