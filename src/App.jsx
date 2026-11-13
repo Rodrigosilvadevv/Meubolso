@@ -24,7 +24,7 @@ const when = n => (n <= 0 ? 'hoje' : n === 1 ? 'amanhã' : `em ${n} dias`)
 const KEY = 'bolso:v1'
 const initial = {
   salary: 0, payDay: 5, fixed: [], varEss: 0, reservePct: 10,
-  goals: [], spends: [],
+  goals: [], deposits: [], spends: [],
   variable: false, earns: [], refs: 0, refCode: '', cfg: { banners: [], tips: TIPS0 },
   hue: 172, mode: 'dark', hide: false, notifDay: '',
 }
@@ -49,29 +49,52 @@ function cycle(payDay) {
 function plan(s0, tier) {
   const canVar = tier !== 'free'
   const { today, start, end } = cycle(s0.payDay)
-  const earned = s0.earns.filter(x => x.date >= toISO(start) && x.date < toISO(end)).reduce((a, x) => a + x.value, 0)
+  const a0 = toISO(start), b0 = toISO(end), t0 = toISO(today)
+  const daysLeft = Math.max(1, diff(today, end))
+  const earned = s0.earns.filter(x => x.date >= a0 && x.date < b0).reduce((a, x) => a + x.value, 0)
   const s = { ...s0, salary: s0.variable && canVar ? Math.max(earned, s0.salary) : s0.salary }
   const sum = l => s.fixed.filter(f => f.level === l).reduce((a, f) => a + f.value, 0)
   const essFixed = sum('essencial'), livFixed = sum('livre')
   const reserve = (s.salary * s.reservePct) / 100
+
+  // Objetivos. O valor reservado por ciclo (need) é calculado sobre o que faltava NO INÍCIO
+  // do ciclo (left + depósitos deste ciclo). Assim, guardar dinheiro não "libera" mais gasto livre.
+  const deps = s.deposits || []
   const goals = (s.goals || []).map(g => {
+    const dep = deps.filter(d => d.goalId === g.id && d.date >= a0 && d.date < b0).reduce((a, d) => a + d.value, 0)
     const left = Math.max(0, g.target - g.saved)
+    const before = Math.min(g.target, Math.max(0, g.target - (g.saved - dep)))
     const months = g.date ? Math.max(1, Math.round(diff(today, new Date(g.date + 'T00:00')) / 30.44)) : 0
-    return { ...g, left, months, need: months ? left / months : 0, pct: g.target ? Math.min(100, (g.saved / g.target) * 100) : 0 }
+    const need = months ? before / months : 0
+    return { ...g, left, months, need, dep, todo: Math.max(0, need - dep), pct: g.target ? Math.min(100, (g.saved / g.target) * 100) : 0 }
   })
   const left = goals.reduce((a, g) => a + g.left, 0)
   const goalNeed = goals.reduce((a, g) => a + g.need, 0)
   const livreVar = s.salary - essFixed - livFixed - s.varEss - reserve - goalNeed
-  const cyc = s.spends.filter(x => x.date >= toISO(start) && x.date < toISO(end))
+
+  const cyc = s.spends.filter(x => x.date >= a0 && x.date < b0)
   const spent = b => cyc.filter(x => x.bucket === b).reduce((a, x) => a + x.value, 0)
+  const spentToday = b => cyc.filter(x => x.bucket === b && x.date === t0).reduce((a, x) => a + x.value, 0)
   const rem = { essencial: s.varEss - spent('essencial'), imprevisto: reserve - spent('imprevisto'), livre: livreVar - spent('livre') }
+
+  // Saldo livre do ciclo (essencial variável + livre variável)
+  const daily = Math.max(0, rem.essencial) + Math.max(0, rem.livre)
+
+  // Limite do dia = saldo que havia no começo de hoje dividido pelos dias que restam (hoje incluído).
+  // "Pode gastar hoje" = limite do dia menos o que já foi gasto hoje.
+  const poolStart = Math.max(0, rem.essencial + spentToday('essencial')) + Math.max(0, rem.livre + spentToday('livre'))
+  const perDay = poolStart / daysLeft
+  const todayLeft = Math.max(0, perDay - spentToday('essencial') - spentToday('livre'))
+
+  // Quanto sobra por mês depois de tudo, menos os objetivos
   const free = s.salary - essFixed - livFixed - s.varEss - reserve
-  const eta = free > 0 && left > 0 ? new Date(today.getFullYear(), today.getMonth() + Math.ceil(left / free), 1) : null
+  // A previsão só faz sentido quando o plano NÃO fecha no prazo dos objetivos
+  const eta = livreVar < 0 && free > 0 && left > 0 ? new Date(today.getFullYear(), today.getMonth() + Math.ceil(left / free), 1) : null
   return {
-    today, start, end, earned, daysLeft: Math.max(1, diff(today, end)), goals, goalNeed, livreVar, rem, spent, cyc, eta, free, left, reserve,
+    today, start, end, earned, daysLeft, goals, goalNeed, livreVar, rem, spent, cyc, eta, free, left, reserve,
     tier, canVar, limit: LIMITS[tier],
     split: { essencial: essFixed + s.varEss, imprevisto: reserve, objetivo: goalNeed, livre: Math.max(0, livreVar) + livFixed },
-    daily: Math.max(0, rem.essencial) + Math.max(0, rem.livre),
+    daily, perDay, todayLeft,
   }
 }
 
@@ -238,7 +261,7 @@ function Inicio({ s, P, A, m, go }) {
   const total = s.varEss + Math.max(0, P.livreVar)
   const pct = total > 0 ? Math.max(0, Math.min(1, P.daily / total)) : 0
   const C = 2 * Math.PI * 54
-  const day = useCount(P.daily / P.daysLeft)
+  const day = useCount(P.todayLeft)
   const gp = P.goals.reduce((a, g) => Math.max(a, g.pct), 0)
   const badges = [['Plano criado', s.salary > 0], ['Primeiro gasto', s.spends.length > 0], ['No orçamento', s.salary > 0 && P.rem.livre >= 0 && P.rem.essencial >= 0], ['Meta 25%', gp >= 25], ['Meta 50%', gp >= 50], ['Meta batida', gp >= 100]]
   return (
@@ -252,7 +275,7 @@ function Inicio({ s, P, A, m, go }) {
           </svg>
           <div><small>Hoje você pode gastar</small><p className="big">{s.hide ? 'R$ •••' : brl(day)}</p></div>
         </div>
-        <p className="muted">{P.daysLeft} dias até o salário ({P.end.toLocaleDateString('pt-BR')}). Disponível no ciclo: {m(P.daily)}.</p>
+        <p className="muted">{P.daysLeft} {P.daysLeft === 1 ? 'dia' : 'dias'} até o salário ({P.end.toLocaleDateString('pt-BR')}). Limite por dia: {m(P.perDay)}. Disponível no ciclo: {m(P.daily)}.</p>
       </section>
       <section>
         <h2>Para onde vai seu salário</h2>
@@ -322,6 +345,17 @@ function GoalCard({ g, s, set, m, say }) {
     set({ goals: s.goals.map(x => x.id === g.id ? { ...x, saved: x.saved + v } : x), deposits: [...(s.deposits || []), { id: Date.now(), goalId: g.id, value: v, date: toISO(new Date()) }] }); setV(0)
     say(hit ? `🎉 Você chegou a ${hit}% de ${g.name || 'sua meta'}!` : 'Depósito registrado')
   }
+  const delay = () => {
+    // Sem data não há o que adiar (antes contava como adiamento mesmo sem mudar nada)
+    if (!g.date) return say('Defina uma data antes de adiar a meta.')
+    upd({ date: addMonth(g.date), delays: (g.delays || 0) + 1 })
+    say('Meta adiada em 1 mês')
+  }
+  const monthly = g.left === 0
+    ? 'Meta batida! Parabéns.'
+    : g.months
+      ? `Guarde ${m(g.need)} por mês (${g.months} ${g.months === 1 ? 'mês' : 'meses'}) para chegar no prazo. ${g.todo > 0 ? `Neste ciclo ainda faltam ${m(g.todo)}.` : 'Neste ciclo você já guardou o combinado.'}`
+      : 'Defina uma data em "Meus objetivos" para ver quanto guardar por mês.'
   return (
     <section className="hero-card">
       <h2>{g.name || 'Objetivo'}</h2>
@@ -329,12 +363,12 @@ function GoalCard({ g, s, set, m, say }) {
       <div className="track tall"><i style={{ width: `${g.pct}%`, background: 'var(--obj)' }} />{[25, 50, 75].map(x => <u key={x} style={{ left: `${x}%` }} />)}</div>
       <div className="marks">{[25, 50, 75, 100].map(x => <span key={x} className={g.pct >= x ? 'got' : ''}>{x}%</span>)}</div>
       <p className="muted">{m(g.saved)} de {m(g.target)} · meta para {g.date ? new Date(g.date + 'T00:00').toLocaleDateString('pt-BR') : 'sem data'}.</p>
-      <p className="muted">{g.months ? `Guarde ${m(g.need)} por mês (${g.months} ${g.months === 1 ? 'mês' : 'meses'}) para chegar no prazo.` : 'Defina uma data em "Meus objetivos" para ver quanto guardar por mês.'}</p>
+      <p className="muted">{monthly}</p>
       <form className="form" onSubmit={dep}>
-        <Num placeholder={`Sugestão: ${g.need.toFixed(2)}`} value={v} onChange={setV} />
+        <Num placeholder={g.todo > 0 ? `Sugestão: ${g.todo.toFixed(2)}` : 'Valor a guardar'} value={v} onChange={setV} />
         <button className="cta">Guardar</button>
       </form>
-      <button className="ghost" type="button" onClick={() => { upd({ date: addMonth(g.date), delays: (g.delays || 0) + 1 }); say('Meta adiada em 1 mês') }}>Adiar meta em 1 mês</button>
+      <button className="ghost" type="button" onClick={delay}>Adiar meta em 1 mês</button>
     </section>
   )
 }
@@ -364,7 +398,7 @@ function Meta({ s, set, P, m, say }) {
         </div>
       </section>
       {list.map(g => <GoalCard key={g.id} g={g} s={s} set={set} m={m} say={say} />)}
-      {P.eta && <section className="wide"><p className="muted">No ritmo do que sobra, você chega lá em {P.eta.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' })}.</p></section>}
+      {P.eta && <section className="wide"><p className="muted">O plano não fecha no prazo dos objetivos. Guardando tudo o que sobra ({m(P.free)} por mês), você chega lá em {P.eta.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' })}.</p></section>}
     </div>
   )
 }
