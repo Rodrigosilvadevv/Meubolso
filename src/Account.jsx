@@ -1,51 +1,77 @@
 import { useEffect, useState } from 'react'
 import { sb, oauth, signUpPhone, signInPhone, enablePush, isPlus, parseRef } from './cloud'
 import { isNative } from './nativeAuth.js'
-import { getPrices } from './purchases'
+import { getPrices, manageSubscription } from './purchases'
 import { Indique } from './Extras'
 
 const Policy = () => <a href="/privacidade.html" target="_blank" rel="noreferrer">Política de Privacidade e LGPD</a>
 const Eula = () => <a href="https://www.apple.com/legal/internet-services/itunes/dev/stdeula/" target="_blank" rel="noreferrer">Termos de Uso</a>
 
 export function Auth() {
-  const [mode, setMode] = useState('in'), [f, setF] = useState({ name: '', tel: '', pass: '' })
-  const [ok, setOk] = useState(false), [err, setErr] = useState(''), [busy, setBusy] = useState(false)
+  const [mode, setMode] = useState('in')
+  const [f, setF] = useState({ name: '', tel: '', pass: '' })
+  const [accepted, setAccepted] = useState(false)
+  const [err, setErr] = useState('')
+  const [busy, setBusy] = useState(false)
   const [code, setCode] = useState('')
   const ref = localStorage.getItem('bolso:ref')
-  const need = () => ok || (setErr('Aceite a Política de Privacidade para continuar.'), false)
+
+  const need = () => {
+    if (accepted) return true
+    setErr('Aceite a Política de Privacidade para continuar.')
+    return false
+  }
+
   // Código/link de indicação digitado na criação da conta
-  const saveCode = () => { const c = parseRef(code); if (c) localStorage.setItem('bolso:ref', c) }
+  const saveCode = () => {
+    const c = parseRef(code)
+    if (c) localStorage.setItem('bolso:ref', c)
+  }
 
   const social = async provider => {
     if (!need()) return
-    setErr(''); setBusy(true)
+    setErr('')
+    setBusy(true)
     saveCode()
-    const { error, cancelled } = await oauth(provider)
-    setBusy(false)
-    if (error && !cancelled) setErr(`Não foi possível entrar: ${error.message || error}`)
+    try {
+      const { error, cancelled } = await oauth(provider)
+      if (error && !cancelled) setErr(`Não foi possível entrar: ${error.message || error}`)
+    } catch (e) {
+      setErr(`Não foi possível entrar: ${e?.message || e}`)
+    } finally {
+      setBusy(false)
+    }
   }
 
   const go = async e => {
-    e.preventDefault(); setErr('')
+    e.preventDefault()
+    setErr('')
     if (mode === 'up' && !need()) return
     if (mode === 'up' && !f.name.trim()) return setErr('Diga seu nome.')
     if (f.tel.replace(/\D/g, '').length < 10) return setErr('Digite o telefone com DDD.')
     if (f.pass.length < 8) return setErr('A senha precisa ter 8 caracteres ou mais.')
     setBusy(true)
     if (mode === 'up') saveCode()
-    const { error } = mode === 'up' ? await signUpPhone(f.name.trim(), f.tel, f.pass) : await signInPhone(f.tel, f.pass)
-    setBusy(false)
-    if (error) {
-      const msg = error.message || ''
-      setErr(
-        /EMAIL_CONFIRM_ON|not confirmed/i.test(msg) ? 'Erro de configuração: a confirmação de e-mail está ligada no Supabase (Authentication → Providers → Email → Confirm email).'
-        : /invalid login/i.test(msg) ? 'Telefone ou senha incorretos.'
-        : /registered/i.test(msg) ? 'Esse telefone já tem conta. Entre com a senha.'
-        : /rate limit|too many/i.test(msg) ? 'Muitas tentativas. Espere alguns minutos.'
-        : `Não foi possível entrar: ${msg}`
-      )
+    try {
+      const { error } = mode === 'up'
+        ? await signUpPhone(f.name.trim(), f.tel, f.pass)
+        : await signInPhone(f.tel, f.pass)
+      if (error) {
+        const msg = error.message || ''
+        let text = `Não foi possível entrar: ${msg}`
+        if (/EMAIL_CONFIRM_ON|not confirmed/i.test(msg)) text = 'Erro de configuração: a confirmação de e-mail está ligada no Supabase (Authentication → Providers → Email → Confirm email).'
+        else if (/invalid login/i.test(msg)) text = 'Telefone ou senha incorretos.'
+        else if (/registered/i.test(msg)) text = 'Esse telefone já tem conta. Entre com a senha.'
+        else if (/rate limit|too many/i.test(msg)) text = 'Muitas tentativas. Espere alguns minutos.'
+        setErr(text)
+      }
+    } catch (e2) {
+      setErr(`Não foi possível entrar: ${e2?.message || e2}`)
+    } finally {
+      setBusy(false)
     }
   }
+
   return (
     <main className="login">
       <section className="hero">
@@ -64,7 +90,7 @@ export function Auth() {
           {mode === 'up' && <input placeholder="Seu nome" autoComplete="name" value={f.name} onChange={e => setF({ ...f, name: e.target.value })} />}
           <input type="tel" inputMode="tel" autoComplete="tel" placeholder="Telefone com DDD" value={f.tel} onChange={e => setF({ ...f, tel: e.target.value })} />
           <input type="password" autoComplete={mode === 'up' ? 'new-password' : 'current-password'} placeholder="Senha (8 ou mais caracteres)" value={f.pass} onChange={e => setF({ ...f, pass: e.target.value })} />
-          <label className="chk"><input type="checkbox" checked={ok} onChange={e => setOk(e.target.checked)} />Li e aceito a <Policy /></label>
+          <label className="chk"><input type="checkbox" checked={accepted} onChange={e => setAccepted(e.target.checked)} />Li e aceito a <Policy /></label>
           <p className="err" role="alert">{err}</p>
           <button className="cta" disabled={busy}>{mode === 'up' ? 'Criar conta' : 'Entrar'}</button>
         </form>
@@ -76,26 +102,32 @@ export function Auth() {
 export function Paywall({ cloud }) {
   const p = cloud.profile
   const [prices, setPrices] = useState({})
-  const [busy, setBusy] = useState(''), [msg, setMsg] = useState('')
-  const [code, setCode] = useState(''), [showRef, setShowRef] = useState(false)
+  const [busy, setBusy] = useState('')
+  const [msg, setMsg] = useState('')
+  const [code, setCode] = useState('')
+  const [showRef, setShowRef] = useState(false)
 
   useEffect(() => { getPrices().then(setPrices).catch(() => {}) }, [])
 
   const buy = async plan => {
     if (!isNative) return setMsg('A assinatura é feita no app do iPhone, pela App Store.')
-    setMsg(''); setBusy(plan)
+    setMsg('')
+    setBusy(plan)
     try { await cloud.buy(plan) }
     catch (e) { if (!e?.userCancelled) setMsg('Não foi possível concluir a compra. Tente novamente.') }
     setBusy('')
   }
   const restore = async () => {
-    setMsg(''); setBusy('restore')
+    setMsg('')
+    setBusy('restore')
     try { if (!(await cloud.restore())) setMsg('Nenhuma assinatura encontrada neste Apple ID.') }
     catch { setMsg('Não foi possível restaurar agora.') }
     setBusy('')
   }
   const useCode = async e => {
-    e.preventDefault(); setMsg(''); setBusy('ref')
+    e.preventDefault()
+    setMsg('')
+    setBusy('ref')
     const r = await cloud.applyRef(code)
     setBusy('')
     if (r.error) setMsg(r.error)
@@ -146,13 +178,21 @@ export function Paywall({ cloud }) {
 
 export function Chat({ s, P, cloud, say }) {
   const plus = isPlus(cloud.profile)
-  const [ch, setCh] = useState('admin'), [msgs, setMsgs] = useState([]), [t, setT] = useState(''), [busy, setBusy] = useState(false)
-  const load = async () => { const { data } = await sb.from('bolso_messages').select('role,body,id').eq('channel', ch).order('created_at').limit(60); setMsgs(data || []) }
+  const [ch, setCh] = useState('admin')
+  const [msgs, setMsgs] = useState([])
+  const [t, setT] = useState('')
+  const [busy, setBusy] = useState(false)
+  const load = async () => {
+    const { data } = await sb.from('bolso_messages').select('role,body,id').eq('channel', ch).order('created_at').limit(60)
+    setMsgs(data || [])
+  }
   useEffect(() => { load() }, [ch])
   const send = async e => {
     e.preventDefault()
-    const text = t.trim(); if (!text || busy) return
-    setT(''); setBusy(true)
+    const text = t.trim()
+    if (!text || busy) return
+    setT('')
+    setBusy(true)
     if (ch === 'admin') {
       const { error } = await sb.from('bolso_messages').insert({ user_id: cloud.user.id, channel: 'admin', role: 'user', body: text })
       if (error) say('Não foi possível enviar agora.')
@@ -161,7 +201,8 @@ export function Chat({ s, P, cloud, say }) {
       const { error } = await sb.functions.invoke('bolso-ai-chat', { body: { text, summary } })
       if (error) say('O assistente não respondeu agora. Tente em instantes.')
     }
-    await load(); setBusy(false)
+    await load()
+    setBusy(false)
   }
   return (
     <section className="wide">
@@ -184,7 +225,11 @@ export function Chat({ s, P, cloud, say }) {
 
 export function Visual({ s, set, say, onExit }) {
   const [perm, setPerm] = useState('Notification' in window ? Notification.permission : 'unsupported')
-  const ask = async () => { const r = await Notification.requestPermission(); setPerm(r); say(r === 'granted' ? 'Avisos ativados neste aparelho' : 'Permissão não concedida') }
+  const ask = async () => {
+    const r = await Notification.requestPermission()
+    setPerm(r)
+    say(r === 'granted' ? 'Avisos ativados neste aparelho' : 'Permissão não concedida')
+  }
   return (
     <div className="grid">
       <section>
@@ -206,9 +251,32 @@ export function Visual({ s, set, say, onExit }) {
   )
 }
 
+const NAMES = { free: 'Gratuito', premium: 'Premium', plus: 'Premium Plus' }
+
 function Perfil({ cloud, say, P }) {
-  const p = cloud.profile, [conf, setConf] = useState('')
+  const p = cloud.profile
+  const [conf, setConf] = useState('')
+  const [prices, setPrices] = useState({})
+  const [busy, setBusy] = useState('')
+  useEffect(() => { getPrices().then(setPrices).catch(() => {}) }, [])
+
+  const paid = p?.plan === 'premium' || p?.plan === 'plus'
   const left = p?.trial_until ? Math.ceil((new Date(p.trial_until) - Date.now()) / 864e5) : 0
+  const until = p?.plan_until ? new Date(p.plan_until).toLocaleDateString('pt-BR') : ''
+
+  const up = async plan => {
+    if (!isNative) return say('A assinatura é feita no app do iPhone, pela App Store.')
+    setBusy(plan)
+    try { await cloud.buy(plan); say('Plano atualizado!') }
+    catch (e) { if (!e?.userCancelled) say('Não foi possível concluir a compra.') }
+    setBusy('')
+  }
+  const restore = async () => {
+    setBusy('restore')
+    try { say((await cloud.restore()) ? 'Assinatura restaurada' : 'Nenhuma assinatura encontrada neste Apple ID.') }
+    catch { say('Não foi possível restaurar agora.') }
+    setBusy('')
+  }
   const push = async () => {
     try { await enablePush(cloud.user); say('Avisos ativados neste aparelho') }
     catch (e) { say(e.message === 'denied' ? 'Permissão negada. Libere nas configurações do aparelho.' : 'Este aparelho não suporta avisos. No iPhone, adicione o app à Tela de Início.') }
@@ -218,20 +286,42 @@ function Perfil({ cloud, say, P }) {
     if (error) return say('Não foi possível excluir agora.')
     cloud.logout()
   }
+
   return (
     <div className="grid">
       <section>
         <h2>Minha conta</h2>
         <p>{p?.name}</p>
-        <p className="muted">{p?.plan === 'plus' ? 'Premium Plus' : p?.plan === 'premium' ? 'Premium' : left > 0 ? `Mês grátis: ${left} ${left === 1 ? 'dia' : 'dias'} restantes` : 'Sem plano ativo'}</p>
-        <p className="tiny">Seu plano inclui até {P.limit} {P.limit === 1 ? 'objetivo' : 'objetivos'}{P.canVar ? ' e renda variável' : ''}.</p>
         <button className="ghost" onClick={push}>Ativar avisos no aparelho</button>
         <button className="ghost" onClick={cloud.logout}>Sair</button>
         <p className="tiny"><Policy /></p>
       </section>
+
+      <section className="hero-card">
+        <h2>Meu plano</h2>
+        <p className="big">{NAMES[paid ? p.plan : 'free']}</p>
+        <p className="muted">
+          {paid ? (until ? `Renova em ${until}` : 'Assinatura ativa')
+            : left > 0 ? `Mês grátis: ${left} ${left === 1 ? 'dia' : 'dias'} restantes` : 'Sem plano ativo'}
+        </p>
+        <p className="tiny">Inclui até {P.limit} {P.limit === 1 ? 'objetivo' : 'objetivos'}{P.canVar ? ' e renda variável' : ''}.</p>
+
+        {!paid && <>
+          <button className="cta" disabled={!!busy} onClick={() => up('premium')}>{busy === 'premium' ? 'Aguarde…' : `Assinar Premium ${prices.premium || 'R$ 19,90'}/mês`}</button>
+          <button className="cta" disabled={!!busy} onClick={() => up('plus')}>{busy === 'plus' ? 'Aguarde…' : `Assinar Plus ${prices.plus || 'R$ 29,90'}/mês`}</button>
+        </>}
+        {p?.plan === 'premium' &&
+          <button className="cta" disabled={!!busy} onClick={() => up('plus')}>{busy === 'plus' ? 'Aguarde…' : `Fazer upgrade para Plus ${prices.plus || 'R$ 29,90'}/mês`}</button>}
+        {paid && <>
+          <button className="ghost" onClick={manageSubscription}>Gerenciar ou cancelar assinatura</button>
+          <p className="tiny">O cancelamento é feito na App Store e vale até o fim do período já pago.</p>
+        </>}
+        <button className="ghost" disabled={!!busy} onClick={restore}>{busy === 'restore' ? 'Restaurando…' : 'Restaurar compras'}</button>
+      </section>
+
       <section className="danger">
         <h2>Excluir conta</h2>
-        <p className="muted">Apaga seus dados, mensagens e avisos de forma definitiva. Se você tem assinatura, cancele também na App Store ou no Google Play.</p>
+        <p className="muted">Apaga seus dados, mensagens e avisos de forma definitiva. Se você tem assinatura, cancele também na App Store.</p>
         <div className="form"><input placeholder="Digite EXCLUIR para confirmar" value={conf} onChange={e => setConf(e.target.value)} /><button className="cta" disabled={conf !== 'EXCLUIR'} onClick={del}>Excluir minha conta</button></div>
       </section>
     </div>
