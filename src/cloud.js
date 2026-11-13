@@ -62,6 +62,9 @@ export const enablePush = async user => {
   return true
 }
 
+const withTimeout = (p, ms) =>
+  Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))])
+
 export function useCloud() {
   const [user, setUser] = useState(null)
   const [profile, setProfile] = useState(null)
@@ -79,15 +82,23 @@ export function useCloud() {
   }
 
   useEffect(() => {
-    sb.auth.getSession().then(async ({ data: { session } }) => {
-      if (session?.user) {
-        setUser(session.user)
-        await fetchProfile(session.user.id)
-        setStatus('in')
-      } else {
-        setStatus('out')
-      }
-    })
+    let alive = true
+
+    withTimeout(sb.auth.getSession(), 8000)
+      .then(async ({ data: { session } }) => {
+        if (!alive) return
+        if (session?.user) {
+          setUser(session.user)
+          try { await withTimeout(fetchProfile(session.user.id), 8000) } catch {}
+          if (alive) setStatus('in')
+        } else {
+          setStatus('out')
+        }
+      })
+      .catch(e => {
+        console.warn('getSession:', e?.message)
+        if (alive) setStatus('out')
+      })
 
     const { data: { subscription } } = sb.auth.onAuthStateChange((event, session) => {
       if (session?.user) {
@@ -104,7 +115,7 @@ export function useCloud() {
       }
     })
 
-    return () => subscription.unsubscribe()
+    return () => { alive = false; subscription.unsubscribe() }
   }, [])
 
   // Depois do login: configura RevenueCat, sincroniza o plano e registra o token de push

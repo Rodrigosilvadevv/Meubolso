@@ -36,12 +36,14 @@ jobs:
           RAW_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
           RAW_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
           RAW_VAPID_PUBLIC_KEY: ${{ secrets.VITE_VAPID_PUBLIC_KEY }}
+          RAW_RC_IOS_KEY: ${{ secrets.VITE_RC_IOS_KEY }}
           VITE_PUBLIC_URL: https://meubolso-bhn2.onrender.com
         run: |
           clean() { printf '%s' "$1" | awk 'NF{print $1; exit}' | sed -E 's/^[A-Za-z_]+=//'; }
           export VITE_SUPABASE_URL="$(clean "$RAW_SUPABASE_URL")"
           export VITE_SUPABASE_ANON_KEY="$(clean "$RAW_SUPABASE_ANON_KEY")"
           export VITE_VAPID_PUBLIC_KEY="$(clean "$RAW_VAPID_PUBLIC_KEY")"
+          export VITE_RC_IOS_KEY="$(clean "$RAW_RC_IOS_KEY")"
           npm run build
 
       - name: Generate iOS App Icons
