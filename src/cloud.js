@@ -38,6 +38,9 @@ export const parseRef = code => {
   return match ? match[1] : clean
 }
 
+// Nome guardado no cadastro (metadata do usuário no Supabase Auth)
+const nameOf = u => u?.user_metadata?.name || u?.user_metadata?.full_name || ''
+
 // Login nativo da Apple no iOS; OAuth normal na web
 export const oauth = provider => makeOauth(sb)(provider)
 
@@ -99,14 +102,25 @@ export function useCloud() {
   const [status, setStatus] = useState('loading')
   const [profileErr, setProfileErr] = useState('')
 
-  const profile = useMemo(
-    () => (dbProfile || rcPlan ? { ...(dbProfile || {}), ...(rcPlan || {}) } : null),
-    [dbProfile, rcPlan]
-  )
+  // Junta o perfil do banco com o plano da App Store. Se o perfil não tem nome, usa o do cadastro.
+  const profile = useMemo(() => {
+    if (!dbProfile && !rcPlan) return null
+    const p = { ...(dbProfile || {}), ...(rcPlan || {}) }
+    if (!p.name) p.name = nameOf(user)
+    return p
+  }, [dbProfile, rcPlan, user])
 
-  const fetchProfile = async userId => {
+  const fetchProfile = async (userId, u) => {
     try {
-      const { data, error } = await sb.from('bolso_profiles').select('*').eq('user_id', userId).single()
+      let { data, error } = await sb.from('bolso_profiles').select('*').eq('user_id', userId).maybeSingle()
+      if (!error && !data) {
+        // Usuário sem perfil: cria um agora
+        const ins = await sb.from('bolso_profiles')
+          .upsert({ user_id: userId, name: nameOf(u) || null }, { onConflict: 'user_id' })
+          .select().maybeSingle()
+        data = ins.data
+        error = ins.error
+      }
       if (error) setProfileErr(error.message)
       else { setDbProfile(data); setProfileErr('') }
     } catch (e) {
@@ -122,7 +136,7 @@ export function useCloud() {
         if (!alive) return
         if (session?.user) {
           setUser(session.user)
-          try { await withTimeout(fetchProfile(session.user.id), 8000) } catch {}
+          try { await withTimeout(fetchProfile(session.user.id, session.user), 8000) } catch {}
           if (alive) setStatus('in')
         } else {
           setStatus('out')
@@ -138,7 +152,7 @@ export function useCloud() {
         setUser(session.user)
         // adia a chamada para fora do callback (evita deadlock do supabase-js)
         setTimeout(async () => {
-          await fetchProfile(session.user.id)
+          await fetchProfile(session.user.id, session.user)
           setStatus('in')
         }, 0)
       } else {
