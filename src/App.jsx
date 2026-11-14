@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 import { Ganhos, Relatorio, Dicas, controlAlerts, addMonth, TIPS0 } from './Extras'
-import { useCloud, useSync, tierOf } from './cloud'
+import { useCloud, tierOf } from './cloud'
+import { useStore } from './db'
 import AdminPage from './AdminPage'
 import { Auth, Paywall, Conta } from './Account'
 import { Ciclo } from './Ciclo'
@@ -21,21 +22,8 @@ const toISO = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate(
 const at = (y, m, d) => new Date(y, m, Math.min(d, new Date(y, m + 1, 0).getDate()))
 const diff = (a, b) => Math.round((b - a) / 864e5)
 const when = n => (n <= 0 ? 'hoje' : n === 1 ? 'amanhã' : `em ${n} dias`)
-const KEY = 'bolso:v1'
-const initial = {
-  salary: 0, payDay: 5, fixed: [], varEss: 0, reservePct: 10,
-  goals: [], deposits: [], spends: [],
-  variable: false, earns: [], refs: 0, refCode: '', cfg: { banners: [], tips: TIPS0 },
-  hue: 172, mode: 'dark', hide: false, notifDay: '',
-}
-// Converte o formato antigo (um único "goal") para a lista "goals".
-const normalize = v => {
-  if (!('goal' in v) && Array.isArray(v.goals)) return v
-  const { goal, ...rest } = v
-  const goals = Array.isArray(rest.goals) && rest.goals.length ? rest.goals : (goal && goal.target > 0 ? [{ id: 1, delays: 0, ...goal }] : [])
-  return { ...rest, goals }
-}
-const load = () => { try { return normalize({ ...initial, ...JSON.parse(localStorage.getItem(KEY)) }) } catch { return initial } }
+// Banners e dicas são configuração fixa do app (não são dados da pessoa)
+const CFG = { banners: [], tips: TIPS0 }
 
 function cycle(payDay) {
   const t = new Date()
@@ -157,33 +145,48 @@ function useCount(v) {
 }
 
 function Main() {
-  const [s, setS] = useState(load)
   const cloud = useCloud()
   const ok = cloud.status === 'in'
   const tier = tierOf(cloud.profile)
   const locked = ok && tier === 'free' // logado, sem plano e sem trial
-  const [tab, setTab] = useState(s.salary ? 'inicio' : 'plano')
+  const [tab, setTab] = useState('inicio')
   const [sub, setSub] = useState('conta')
   const [bell, setBell] = useState(false)
   const [toast, setToast] = useState('')
-  useEffect(() => { try { localStorage.setItem(KEY, JSON.stringify(s)) } catch {} }, [s])
-  // Dados antigos vindos da nuvem (campo "goal") viram a lista "goals".
-  useEffect(() => { if ('goal' in s) setS(normalize) }, [s])
-  const set = patch => setS(v => ({ ...v, ...patch }))
+  const say = (t, ms = 3200) => { setToast(t); setTimeout(() => setToast(''), ms) }
+
+  // Os dados moram no banco: cada ação grava na tabela e só então a tela muda.
+  const store = useStore(cloud.user?.id, ok, e => say(`Não foi possível salvar: ${e?.message || e}`, 7000))
+  const { act, phase } = store
+  const s = useMemo(() => ({ ...store.s, cfg: CFG }), [store.s])
   const P = useMemo(() => plan(s, tier), [s, tier])
-useSync(s, setS, ok, cloud.user, cloud.profile, P)
   const A = useMemo(() => alerts(s, P), [s, P])
-  const say = t => { setToast(t); setTimeout(() => setToast(''), 3200) }
   const m = n => (s.hide ? 'R$ •••••' : brl(n))
   const go = t => {
     if (SUBTABS.includes(t)) { setSub(t); t = 'conta' }
     setTab(t); setBell(false); window.scrollTo({ top: 0 })
   }
+
+  // Na primeira vez que os dados chegam, quem ainda não tem plano começa pela aba Plano.
+  const opened = useRef(false)
   useEffect(() => {
-    if (ok && A[0] && 'Notification' in window && Notification.permission === 'granted' && s.notifDay !== toISO(P.today)) {
-      new Notification('Meu bolso', { body: A[0].title }); set({ notifDay: toISO(P.today) })
+    if (phase === 'ready' && !opened.current) {
+      opened.current = true
+      if (!store.s.salary) setTab('plano')
     }
-  }, [ok])
+    if (!ok) opened.current = false
+  }, [phase, ok])
+
+  // Aviso do dia (navegador), no máximo uma vez por dia
+  useEffect(() => {
+    if (phase !== 'ready' || !A[0] || !('Notification' in window) || Notification.permission !== 'granted') return
+    const day = toISO(P.today)
+    try {
+      if (localStorage.getItem('bolso:notifDay') === day) return
+      new Notification('Meu bolso', { body: A[0].title })
+      localStorage.setItem('bolso:notifDay', day)
+    } catch {}
+  }, [phase])
 
   const cls = `app ${s.mode}`, sty = { '--h': s.hue }
   if (!ok || locked) {
@@ -195,9 +198,26 @@ useSync(s, setS, ok, cloud.user, cloud.profile, P)
       </div>
     )
   }
+  if (phase !== 'ready') {
+    return (
+      <div className={cls} style={sty}>
+        {phase === 'error' ? (
+          <main className="paywall">
+            <div>
+              <div className="logo"><i />Meu bolso</div>
+              <h1 style={{ marginTop: 12 }}>Não consegui carregar seus dados</h1>
+              <p className="err" role="alert">{store.err}</p>
+              <button className="cta" onClick={store.reload}>Tentar de novo</button>
+              <button className="ghost" onClick={cloud.logout}>Sair</button>
+            </div>
+          </main>
+        ) : <div className="boot" role="status" aria-label="Carregando"><i /><span>Meu bolso</span></div>}
+      </div>
+    )
+  }
 
   const first = (cloud.profile?.name || 'Você').split(' ')[0], hr = new Date().getHours()
-  const props = { s, set, P, A, m, go, say }
+  const props = { s, act, P, A, m, go, say }
   return (
     <div className={cls} style={sty}>
       <aside>
@@ -208,7 +228,7 @@ useSync(s, setS, ok, cloud.user, cloud.profile, P)
         <header>
           <div><small>{hr < 12 ? 'Bom dia' : hr < 18 ? 'Boa tarde' : 'Boa noite'},</small><h1>{first}</h1></div>
           <div className="acts">
-            <button aria-label={s.hide ? 'Mostrar valores' : 'Ocultar valores'} className={s.hide ? 'on' : ''} onClick={() => set({ hide: !s.hide })}><Ic n="eye" /></button>
+            <button aria-label={s.hide ? 'Mostrar valores' : 'Ocultar valores'} className={s.hide ? 'on' : ''} onClick={() => act.saveSettings({ hide: !s.hide })}><Ic n="eye" /></button>
             <button aria-label="Avisos" onClick={() => setBell(!bell)}><Ic n="bell" />{A.length > 0 && <b className="dot">{A.length}</b>}</button>
             <span className="av">{first[0].toUpperCase()}</span>
           </div>
@@ -294,15 +314,18 @@ function Inicio({ s, P, A, m, go }) {
   )
 }
 
-function Gastos({ s, set, P, m }) {
+function Gastos({ s, act, P, m, say }) {
   const [f, setF] = useState({ desc: '', value: 0, bucket: 'essencial' })
+  const [busy, setBusy] = useState(false)
   // "Ganho do dia" só aparece se a pessoa marcou renda variável no Plano (e o plano permite).
   const varOn = s.variable && P.canVar
-  const add = e => {
+  const add = async e => {
     e.preventDefault()
-    if (!f.value) return
-    set({ spends: [{ id: Date.now(), ...f, date: toISO(new Date()) }, ...s.spends] })
-    setF({ desc: '', value: 0, bucket: f.bucket })
+    if (!f.value || busy) return
+    setBusy(true)
+    const saved = await act.addSpend({ ...f, date: toISO(new Date()) })
+    setBusy(false)
+    if (saved) { setF({ desc: '', value: 0, bucket: f.bucket }); say('Gasto salvo') }
   }
   return (
     <div className="grid">
@@ -312,10 +335,10 @@ function Gastos({ s, set, P, m }) {
           <div className="seg">{['essencial', 'imprevisto', 'livre'].map(k => <button type="button" key={k} className={f.bucket === k ? 'on' : ''} onClick={() => setF({ ...f, bucket: k })}><b style={{ background: LEVELS[k].color }} />{LEVELS[k].label}</button>)}</div>
           <input placeholder="O que foi?" value={f.desc} onChange={e => setF({ ...f, desc: e.target.value })} />
           <Num placeholder="Valor" value={f.value} onChange={v => setF({ ...f, value: v })} />
-          <button className="cta">Registrar</button>
+          <button className="cta" disabled={busy}>{busy ? 'Salvando…' : 'Registrar'}</button>
         </form>
       </section>
-      {varOn && <Ganhos s={s} set={set} P={P} m={m} />}
+      {varOn && <Ganhos s={s} act={act} P={P} m={m} say={say} />}
       <section>
         <h2>Neste ciclo</h2>
         <ul className="list">
@@ -325,7 +348,7 @@ function Gastos({ s, set, P, m }) {
               <b style={{ background: LEVELS[x.bucket].color }} />
               <span>{x.desc || LEVELS[x.bucket].label}<small>{x.date.slice(8)}/{x.date.slice(5, 7)}</small></span>
               <em>{m(x.value)}</em>
-              <button className="x" aria-label="Remover" onClick={() => set({ spends: s.spends.filter(y => y.id !== x.id) })}>×</button>
+              <button className="x" aria-label="Remover" onClick={() => act.removeSpend(x.id)}>×</button>
             </li>
           ))}
         </ul>
@@ -334,22 +357,25 @@ function Gastos({ s, set, P, m }) {
   )
 }
 
-function GoalCard({ g, s, set, m, say }) {
+function GoalCard({ g, act, m, say }) {
   const [v, setV] = useState(0)
-  const upd = patch => set({ goals: s.goals.map(x => x.id === g.id ? { ...x, ...patch } : x) })
-  const dep = e => {
+  const [busy, setBusy] = useState(false)
+  const dep = async e => {
     e.preventDefault()
-    if (!v) return
+    if (!v || busy) return
     const after = Math.min(100, ((g.saved + v) / g.target) * 100)
     const hit = [100, 75, 50, 25].find(x => g.pct < x && after >= x)
-    set({ goals: s.goals.map(x => x.id === g.id ? { ...x, saved: x.saved + v } : x), deposits: [...(s.deposits || []), { id: Date.now(), goalId: g.id, value: v, date: toISO(new Date()) }] }); setV(0)
+    setBusy(true)
+    const saved = await act.deposit(g.id, v)
+    setBusy(false)
+    if (!saved) return
+    setV(0)
     say(hit ? `🎉 Você chegou a ${hit}% de ${g.name || 'sua meta'}!` : 'Depósito registrado')
   }
-  const delay = () => {
-    // Sem data não há o que adiar (antes contava como adiamento mesmo sem mudar nada)
+  const delay = async () => {
+    // Sem data não há o que adiar
     if (!g.date) return say('Defina uma data antes de adiar a meta.')
-    upd({ date: addMonth(g.date), delays: (g.delays || 0) + 1 })
-    say('Meta adiada em 1 mês')
+    if (await act.saveGoal({ ...g, date: addMonth(g.date), delays: (g.delays || 0) + 1 })) say('Meta adiada em 1 mês')
   }
   const monthly = g.left === 0
     ? 'Meta batida! Parabéns.'
@@ -366,62 +392,106 @@ function GoalCard({ g, s, set, m, say }) {
       <p className="muted">{monthly}</p>
       <form className="form" onSubmit={dep}>
         <Num placeholder={g.todo > 0 ? `Sugestão: ${g.todo.toFixed(2)}` : 'Valor a guardar'} value={v} onChange={setV} />
-        <button className="cta">Guardar</button>
+        <button className="cta" disabled={busy}>{busy ? 'Salvando…' : 'Guardar'}</button>
       </form>
       <button className="ghost" type="button" onClick={delay}>Adiar meta em 1 mês</button>
     </section>
   )
 }
 
-function Meta({ s, set, P, m, say }) {
+// Formulário de um objetivo: edita um rascunho e só grava no banco ao apertar "Salvar objetivo".
+function GoalForm({ g, isNew, act, say, onDone }) {
+  const from = x => ({ name: x.name, target: x.target, date: x.date, saved: x.saved })
+  const [d, setD] = useState(from(g))
+  const [busy, setBusy] = useState(false)
+  // Se o objetivo mudou no banco (ex.: depósito), o rascunho acompanha
+  useEffect(() => { setD(from(g)) }, [g.name, g.target, g.date, g.saved])
+  const dirty = isNew || d.name !== g.name || d.target !== g.target || d.date !== g.date || d.saved !== g.saved
+  const save = async e => {
+    e.preventDefault()
+    if (busy) return
+    if (!(d.target > 0)) return say('Informe quanto custa o objetivo.')
+    setBusy(true)
+    const saved = await act.saveGoal({ ...g, ...d })
+    setBusy(false)
+    if (saved) { say('Objetivo salvo'); onDone?.() }
+  }
+  const del = async () => {
+    if (isNew) return onDone?.()
+    if (await act.removeGoal(g.id)) say('Objetivo removido')
+  }
+  return (
+    <form className="form" onSubmit={save}>
+      <input value={d.name} placeholder="O que quero (ex.: Viagem)" aria-label="Nome do objetivo" onChange={e => setD({ ...d, name: e.target.value })} />
+      <Num placeholder="Quanto custa" aria-label="Quanto custa" value={d.target} onChange={v => setD({ ...d, target: v })} />
+      <input type="date" aria-label="Até quando" value={d.date} onChange={e => setD({ ...d, date: e.target.value })} />
+      <Num placeholder="Já guardei" aria-label="Já guardei" value={d.saved} onChange={v => setD({ ...d, saved: v })} />
+      <button className="cta" disabled={busy || !dirty}>{busy ? 'Salvando…' : 'Salvar objetivo'}</button>
+      <button type="button" className="ghost" onClick={del}>Remover objetivo</button>
+    </form>
+  )
+}
+
+function Meta({ s, act, P, m, say }) {
+  const [novo, setNovo] = useState(null)
   const list = P.goals.filter(g => g.target > 0)
-  const atLimit = s.goals.length >= P.limit
-  const updGoal = (id, patch) => set({ goals: s.goals.map(x => x.id === id ? { ...x, ...patch } : x) })
-  const addGoal = () => { if (!atLimit) set({ goals: [...s.goals, { id: Date.now(), name: '', target: 0, date: '', saved: 0, delays: 0 }] }) }
+  const atLimit = s.goals.length + (novo ? 1 : 0) >= P.limit
+  const add = () => { if (!atLimit) setNovo({ id: 0, name: '', target: 0, date: '', saved: 0, delays: 0 }) }
   return (
     <div className="grid">
       <section className="wide">
         <h2>Meus objetivos</h2>
-        {s.goals.length === 0 && <p className="muted">Diga o que quer conquistar, quanto custa e até quando.</p>}
+        {s.goals.length === 0 && !novo && <p className="muted">Diga o que quer conquistar, quanto custa e até quando.</p>}
         <div className="form">
-          {s.goals.map(g => (
-            <div key={g.id} className="form">
-              <input value={g.name} placeholder="O que quero (ex.: Viagem)" aria-label="Nome do objetivo" onChange={e => updGoal(g.id, { name: e.target.value })} />
-              <Num placeholder="Quanto custa" aria-label="Quanto custa" value={g.target} onChange={v => updGoal(g.id, { target: v })} />
-              <input type="date" aria-label="Até quando" value={g.date} onChange={e => updGoal(g.id, { date: e.target.value })} />
-              <Num placeholder="Já guardei" aria-label="Já guardei" value={g.saved} onChange={v => updGoal(g.id, { saved: v })} />
-              <button type="button" className="ghost" onClick={() => set({ goals: s.goals.filter(x => x.id !== g.id) })}>Remover objetivo</button>
-            </div>
-          ))}
-          <button type="button" className="ghost" disabled={atLimit} onClick={addGoal}>Adicionar objetivo</button>
+          {s.goals.map(g => <GoalForm key={g.id} g={g} act={act} say={say} />)}
+          {novo && <GoalForm key="novo" g={novo} isNew act={act} say={say} onDone={() => setNovo(null)} />}
+          <button type="button" className="ghost" disabled={atLimit} onClick={add}>Adicionar objetivo</button>
           {atLimit && <p className="tiny">Seu plano permite até {P.limit} {P.limit === 1 ? 'objetivo' : 'objetivos'}.</p>}
         </div>
       </section>
-      {list.map(g => <GoalCard key={g.id} g={g} s={s} set={set} m={m} say={say} />)}
+      {list.map(g => <GoalCard key={g.id} g={g} act={act} m={m} say={say} />)}
       {P.eta && <section className="wide"><p className="muted">O plano não fecha no prazo dos objetivos. Guardando tudo o que sobra ({m(P.free)} por mês), você chega lá em {P.eta.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' })}.</p></section>}
     </div>
   )
 }
 
-function Plano({ s, set, P }) {
+function Plano({ s, act, P, say }) {
   const [n, setN] = useState({ name: '', value: 0, level: 'essencial', day: 0 })
-  const add = e => {
+  // Salário e limites são rascunhos: só vão para o banco ao apertar "Salvar"
+  const [a, setA] = useState({ salary: s.salary, payDay: s.payDay, variable: s.variable })
+  const [b, setB] = useState({ varEss: s.varEss, reservePct: s.reservePct })
+  const [busy, setBusy] = useState('')
+  useEffect(() => { setA({ salary: s.salary, payDay: s.payDay, variable: s.variable }) }, [s.salary, s.payDay, s.variable])
+  useEffect(() => { setB({ varEss: s.varEss, reservePct: s.reservePct }) }, [s.varEss, s.reservePct])
+
+  const saveSettings = (key, draft, msg) => async e => {
     e.preventDefault()
-    if (!n.name || !n.value) return
-    set({ fixed: [...s.fixed, { id: Date.now(), ...n }] })
-    setN({ name: '', value: 0, level: n.level, day: 0 })
+    if (busy) return
+    setBusy(key)
+    const saved = await act.saveSettings(draft)
+    setBusy('')
+    if (saved) say(msg)
   }
-  const varOn = s.variable && P.canVar
+  const add = async e => {
+    e.preventDefault()
+    if (!n.name || !n.value || busy) return
+    setBusy('fixed')
+    const saved = await act.addFixed(n)
+    setBusy('')
+    if (saved) { setN({ name: '', value: 0, level: n.level, day: 0 }); say('Gasto fixo salvo') }
+  }
+  const varOn = a.variable && P.canVar
   return (
     <div className="grid">
       <section>
         <h2>Salário</h2>
-        <div className="form">
-          <label className="chk"><input type="checkbox" checked={varOn} disabled={!P.canVar} onChange={e => set({ variable: e.target.checked })} />Minha renda varia (diarista, autônomo, apps)</label>
+        <form className="form" onSubmit={saveSettings('a', a, 'Salário salvo')}>
+          <label className="chk"><input type="checkbox" checked={varOn} disabled={!P.canVar} onChange={e => setA({ ...a, variable: e.target.checked })} />Minha renda varia (diarista, autônomo, apps)</label>
           {!P.canVar && <p className="tiny">Renda variável faz parte do Premium e do Plus.</p>}
-          <label>{varOn ? 'Estimativa mínima do mês' : 'Valor líquido'}<Num value={s.salary} onChange={v => set({ salary: v })} /></label>
-          <label>Dia que recebo<input type="number" min="1" max="31" value={s.payDay} onChange={e => set({ payDay: Math.min(31, Math.max(1, +e.target.value || 1)) })} /></label>
-        </div>
+          <label>{varOn ? 'Estimativa mínima do mês' : 'Valor líquido'}<Num value={a.salary} onChange={v => setA({ ...a, salary: v })} /></label>
+          <label>Dia que recebo<input type="number" min="1" max="31" value={a.payDay} onChange={e => setA({ ...a, payDay: Math.min(31, Math.max(1, +e.target.value || 1)) })} /></label>
+          <button className="cta" disabled={busy === 'a'}>{busy === 'a' ? 'Salvando…' : 'Salvar salário'}</button>
+        </form>
       </section>
       <section className="wide">
         <h2>Gastos fixos</h2>
@@ -433,22 +503,23 @@ function Plano({ s, set, P }) {
             <option value="essencial">Essencial</option>
             <option value="livre">Livre (assinaturas, lazer)</option>
           </select>
-          <button className="cta">Adicionar</button>
+          <button className="cta" disabled={busy === 'fixed'}>{busy === 'fixed' ? 'Salvando…' : 'Adicionar'}</button>
         </form>
         <ul className="list">
           {s.fixed.map(x => (
             <li key={x.id}>
               <b style={{ background: LEVELS[x.level].color }} /><span>{x.name}{x.day ? <small>vence dia {x.day}</small> : null}</span><em>{brl(x.value)}</em>
-              <button className="x" aria-label="Remover" onClick={() => set({ fixed: s.fixed.filter(y => y.id !== x.id) })}>×</button>
+              <button className="x" aria-label="Remover" onClick={() => act.removeFixed(x.id)}>×</button>
             </li>
           ))}
         </ul>
-        <div className="form">
-          <label>Essenciais variáveis por mês (mercado, transporte)<Num value={s.varEss} onChange={v => set({ varEss: v })} /></label>
-          <label>Reserva de imprevistos ({s.reservePct}% do salário)
-            <input type="range" min="0" max="30" value={s.reservePct} onChange={e => set({ reservePct: +e.target.value })} />
+        <form className="form" onSubmit={saveSettings('b', b, 'Limites salvos')}>
+          <label>Essenciais variáveis por mês (mercado, transporte)<Num value={b.varEss} onChange={v => setB({ ...b, varEss: v })} /></label>
+          <label>Reserva de imprevistos ({b.reservePct}% do salário)
+            <input type="range" min="0" max="30" value={b.reservePct} onChange={e => setB({ ...b, reservePct: +e.target.value })} />
           </label>
-        </div>
+          <button className="cta" disabled={busy === 'b'}>{busy === 'b' ? 'Salvando…' : 'Salvar limites'}</button>
+        </form>
       </section>
     </div>
   )

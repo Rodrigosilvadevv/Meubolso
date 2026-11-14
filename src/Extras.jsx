@@ -35,9 +35,18 @@ export function controlAlerts(s, P) {
   return a
 }
 
-export function Ganhos({ s, set, P, m }) {
+// Extras.jsx — troque SÓ a função `Ganhos` por esta (o resto do arquivo não muda).
+export function Ganhos({ s, act, P, m, say }) {
   const [f, setF] = useState({ date: toISO(new Date()), value: 0, desc: '' })
-  const add = e => { e.preventDefault(); if (!f.value) return; set({ earns: [{ id: Date.now(), ...f }, ...s.earns] }); setF({ ...f, value: 0, desc: '' }) }
+  const [busy, setBusy] = useState(false)
+  const add = async e => {
+    e.preventDefault()
+    if (!f.value || busy) return
+    setBusy(true)
+    const saved = await act.addEarn(f)
+    setBusy(false)
+    if (saved) { setF({ ...f, value: 0, desc: '' }); say('Ganho salvo') }
+  }
   const cyc = s.earns.filter(x => x.date >= toISO(P.start) && x.date < toISO(P.end))
   return (
     <section className="wide">
@@ -47,12 +56,12 @@ export function Ganhos({ s, set, P, m }) {
         <input type="date" value={f.date} onChange={e => setF({ ...f, date: e.target.value })} aria-label="Dia" />
         <Num placeholder="Valor do dia" value={f.value} onChange={v => setF({ ...f, value: v })} />
         <input placeholder="De onde veio?" value={f.desc} onChange={e => setF({ ...f, desc: e.target.value })} />
-        <button className="cta">Registrar ganho</button>
+        <button className="cta" disabled={busy}>{busy ? 'Salvando…' : 'Registrar ganho'}</button>
       </form>
       <ul className="list">
         {cyc.map(x => (
           <li key={x.id}><b style={{ background: 'var(--obj)' }} /><span>{x.desc || 'Ganho'}<small>{x.date.slice(8)}/{x.date.slice(5, 7)}</small></span><em>{m(x.value)}</em>
-            <button className="x" aria-label="Remover" onClick={() => set({ earns: s.earns.filter(y => y.id !== x.id) })}>×</button></li>
+            <button className="x" aria-label="Remover" onClick={() => act.removeEarn(x.id)}>×</button></li>
         ))}
       </ul>
     </section>
