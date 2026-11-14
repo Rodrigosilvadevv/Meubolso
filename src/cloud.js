@@ -44,18 +44,35 @@ const nameOf = u => u?.user_metadata?.name || u?.user_metadata?.full_name || ''
 // Login nativo da Apple no iOS; OAuth normal na web
 export const oauth = provider => makeOauth(sb)(provider)
 
+// ---------- Telefone = identidade da pessoa ----------
+// Telefone padronizado: só dígitos e sem o 55 do Brasil.
+// "11 99999-9999", "(11) 99999-9999" e "+55 11 99999-9999" viram a mesma pessoa.
+const phoneKey = tel => {
+  let d = String(tel || '').replace(/\D/g, '')
+  if ((d.length === 12 || d.length === 13) && d.startsWith('55')) d = d.slice(2)
+  return d
+}
+const phoneEmail = key => `${key}@meubolso.app`
+
 export const signUpPhone = async (name, tel, password) => {
-  const email = `${tel.replace(/\D/g, '')}@meubolso.app`
   return await sb.auth.signUp({
-    email,
+    email: phoneEmail(phoneKey(tel)),
     password,
     options: { data: { name } },
   })
 }
 
+// Tenta o formato padrão e, depois, os formatos antigos (contas criadas antes da padronização)
 export const signInPhone = async (tel, password) => {
-  const email = `${tel.replace(/\D/g, '')}@meubolso.app`
-  return await sb.auth.signInWithPassword({ email, password })
+  const raw = String(tel || '').replace(/\D/g, '')
+  const key = phoneKey(tel)
+  const keys = [...new Set([key, raw, `55${key}`])]
+  let last
+  for (const k of keys) {
+    last = await sb.auth.signInWithPassword({ email: phoneEmail(k), password })
+    if (!last.error) return last
+  }
+  return last
 }
 
 export const enablePush = async user => {
