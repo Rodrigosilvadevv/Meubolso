@@ -143,3 +143,7 @@ b[style]{width:10px;height:10px;border-radius:50%;flex:none}
 .cta:disabled{opacity:.5;cursor:not-allowed}
 a{color:var(--ac)}
 .app{padding-top:env(safe-area-inset-top)}
+.boot{grid-column:1/-1;min-height:80vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px}
+.boot i{width:64px;height:64px;border-radius:20px 20px 41px 20px;background:linear-gradient(135deg,var(--ac),var(--ac2));animation:pulse 1.2s ease-in-out infinite}
+.boot span{font-family:'Bricolage Grotesque',system-ui,sans-serif;font-weight:800;font-size:1.2rem;color:var(--mu)}
+@keyframes pulse{0%,100%{transform:scale(.8);opacity:.75}50%{transform:scale(1.15);opacity:1}}

@@ -101,11 +101,14 @@ export function useCloud() {
   const [entReady, setEntReady] = useState(!isNative)
   const [status, setStatus] = useState('loading')
   const [profileErr, setProfileErr] = useState('')
+  // Só decidimos entre app e tela de planos depois que o perfil foi carregado (ou falhou)
+  const [profReady, setProfReady] = useState(false)
 
   // Junta o perfil do banco com o plano da App Store. Se o perfil não tem nome, usa o do cadastro.
+  // A App Store só sobrescreve o plano quando há assinatura ativa; sem ela, vale o que está no banco.
   const profile = useMemo(() => {
     if (!dbProfile && !rcPlan) return null
-    const p = { ...(dbProfile || {}), ...(rcPlan || {}) }
+    const p = { ...(dbProfile || {}), ...(rcPlan?.plan ? rcPlan : {}) }
     if (!p.name) p.name = nameOf(user)
     return p
   }, [dbProfile, rcPlan, user])
@@ -120,11 +123,17 @@ export function useCloud() {
           .select().maybeSingle()
         data = ins.data
         error = ins.error
+      } else if (!error && data && !data.name && nameOf(u)) {
+        // Perfil sem nome (o nome pode chegar depois do login): grava o nome do cadastro
+        const up = await sb.from('bolso_profiles').update({ name: nameOf(u) }).eq('user_id', userId).select().maybeSingle()
+        if (up.data) data = up.data
       }
       if (error) setProfileErr(error.message)
       else { setDbProfile(data); setProfileErr('') }
     } catch (e) {
       setProfileErr(e.message || 'Erro ao carregar perfil')
+    } finally {
+      setProfReady(true)
     }
   }
 
@@ -160,6 +169,7 @@ export function useCloud() {
         setDbProfile(null)
         setRcPlan(null)
         setEntReady(!isNative)
+        setProfReady(false)
         setStatus('out')
       }
     })
@@ -189,7 +199,7 @@ export function useCloud() {
     let off = () => {}
     let dead = false
     // Se o RevenueCat demorar demais, segue em frente com o que já se sabe
-    const timer = setTimeout(() => { if (!dead) setEntReady(true) }, 6000)
+    const timer = setTimeout(() => { if (!dead) setEntReady(true) }, 10000)
 
     ;(async () => {
       try {
@@ -237,13 +247,27 @@ export function useCloud() {
     setDbProfile(null)
     setRcPlan(null)
     setEntReady(!isNative)
+    setProfReady(false)
     setStatus('out')
   }
 
-  // Enquanto a assinatura não foi conferida, o app mostra "Carregando…" em vez da tela de planos
-  const shownStatus = status === 'in' && !entReady ? 'loading' : status
+  // Salva o nome no perfil (e no cadastro) para aparecer na saudação
+  const saveName = async name => {
+    const n = (name || '').trim()
+    if (!n || !user) return { error: 'Digite seu nome.' }
+    const { data, error } = await sb.from('bolso_profiles')
+      .upsert({ user_id: user.id, name: n }, { onConflict: 'user_id' })
+      .select().maybeSingle()
+    if (error) return { error: error.message }
+    setDbProfile(data)
+    try { await sb.auth.updateUser({ data: { name: n, full_name: n } }) } catch {}
+    return {}
+  }
 
-  return { user, profile, status: shownStatus, profileErr, logout, buy, restore, applyRef }
+  // Enquanto o perfil e a assinatura não foram conferidos, o app mostra "Carregando…" em vez da tela de planos
+  const shownStatus = status === 'in' && !(entReady && profReady) ? 'loading' : status
+
+  return { user, profile, status: shownStatus, profileErr, logout, buy, restore, applyRef, saveName }
 }
 
 // Sincronização com a nuvem (ainda não implementada). O App.jsx já chama este hook.

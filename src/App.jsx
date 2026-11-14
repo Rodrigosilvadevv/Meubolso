@@ -189,7 +189,7 @@ function Main() {
   if (!ok || locked) {
     return (
       <div className={cls} style={sty}>
-        {cloud.status === 'loading' ? <p className="muted" style={{ padding: 40 }}>Carregando…</p>
+       {cloud.status === 'loading' ? <div className="boot" role="status" aria-label="Carregando"><i /><span>Meu bolso</span></div>
           : cloud.status === 'out' ? <Auth />
           : <Paywall cloud={cloud} />}
       </div>
