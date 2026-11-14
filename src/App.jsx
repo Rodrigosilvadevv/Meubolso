@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 import { Ganhos, Relatorio, Dicas, controlAlerts, addMonth, TIPS0 } from './Extras'
 import { useCloud, tierOf } from './cloud'
-import { useStore } from './db'
+import { useStore, usePushState } from './db'
 import AdminPage from './AdminPage'
 import { Auth, Paywall, Conta } from './Account'
 import { Ciclo } from './Ciclo'
@@ -161,6 +161,7 @@ function Main() {
   const s = useMemo(() => ({ ...store.s, cfg: CFG }), [store.s])
   const P = useMemo(() => plan(s, tier), [s, tier])
   const A = useMemo(() => alerts(s, P), [s, P])
+    usePushState(cloud.user?.id, phase === 'ready', s, P)
   const m = n => (s.hide ? 'R$ •••••' : brl(n))
   const go = t => {
     if (SUBTABS.includes(t)) { setSub(t); t = 'conta' }
@@ -177,15 +178,14 @@ function Main() {
     if (!ok) opened.current = false
   }, [phase, ok])
 
-  // Aviso do dia (navegador), no máximo uma vez por dia
+  
+   // Aviso do dia (navegador), no máximo uma vez por dia (o dia fica salvo no banco)
   useEffect(() => {
     if (phase !== 'ready' || !A[0] || !('Notification' in window) || Notification.permission !== 'granted') return
     const day = toISO(P.today)
-    try {
-      if (localStorage.getItem('bolso:notifDay') === day) return
-      new Notification('Meu bolso', { body: A[0].title })
-      localStorage.setItem('bolso:notifDay', day)
-    } catch {}
+    if (s.notifDay === day) return
+    new Notification('Meu bolso', { body: A[0].title })
+    act.saveSettings({ notifDay: day })
   }, [phase])
 
   const cls = `app ${s.mode}`, sty = { '--h': s.hue }

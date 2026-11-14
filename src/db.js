@@ -1,10 +1,12 @@
 // Camada de dados do Meu bolso.
 // O banco (Supabase) é a fonte da verdade:
 //  - ao entrar, o app lê tudo das tabelas;
-//  - cada ação (registrar gasto, salvar objetivo...) grava na tabela e SÓ DEPOIS a tela muda;
+//  - cada ação grava na tabela e SÓ DEPOIS a tela muda;
 //  - se a gravação falhar, a tela não muda e a pessoa vê o erro.
+// Nada é guardado no aparelho (localStorage).
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { sb } from './cloud'
+import { isNative } from './nativeAuth.js'
 
 const num = n => (Number.isFinite(Number(n)) ? Number(n) : 0)
 const money = n => Math.round(num(n) * 100) / 100
@@ -12,30 +14,16 @@ const okDate = d => (typeof d === 'string' && /^\d{4}-\d{2}-\d{2}/.test(d) ? d.s
 const intOrNull = n => { const v = Math.round(Number(n)); return Number.isFinite(v) && v > 0 ? v : null }
 const clamp = (n, a, b) => Math.min(b, Math.max(a, n))
 const stamp = () => new Date().toISOString()
-const isoNow = () => {
-  const d = new Date()
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-}
+const iso = d => (d ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}` : null)
+const isoNow = () => iso(new Date())
 let lastId = 0
 const newId = () => (lastId = Math.max(Date.now(), lastId + 1))
 
 export const EMPTY = {
   salary: 0, payDay: 5, fixed: [], varEss: 0, reservePct: 10,
   goals: [], deposits: [], spends: [], variable: false, earns: [],
-  refs: 0, hue: 172, mode: 'dark', hide: false,
+  refs: 0, hue: 172, mode: 'dark', hide: false, notifDay: '',
 }
-
-const lsGet = k => { try { return localStorage.getItem(k) } catch { return null } }
-const lsSet = (k, v) => { try { v ? localStorage.setItem(k, v) : localStorage.removeItem(k) } catch {} }
-
-// Só a aparência (cor e tema) fica no aparelho, para a primeira tela não piscar. Não são dados da pessoa.
-const readLook = () => {
-  try {
-    const l = JSON.parse(lsGet('bolso:look') || 'null')
-    return l && typeof l === 'object' ? { hue: num(l.hue ?? 172), mode: l.mode === 'light' ? 'light' : 'dark' } : {}
-  } catch { return {} }
-}
-const writeLook = s => lsSet('bolso:look', JSON.stringify({ hue: s.hue, mode: s.mode }))
 
 // ---------- Tabelas: app <-> banco ----------
 const COLL = {
@@ -76,10 +64,11 @@ const settingsRow = s => ({
   hue: clamp(Math.round(num(s.hue ?? 172)), 0, 360),
   mode: s.mode === 'light' ? 'light' : 'dark',
   hide: !!s.hide,
+  notif_day: okDate(s.notifDay) || null,
 })
 const fromSettings = d => ({
   salary: Number(d.salary), payDay: d.pay_day, varEss: Number(d.var_ess), reservePct: d.reserve_pct,
-  variable: !!d.variable, hue: d.hue, mode: d.mode, hide: !!d.hide,
+  variable: !!d.variable, hue: d.hue, mode: d.mode, hide: !!d.hide, notifDay: d.notif_day || '',
 })
 
 // Toda chamada ao banco passa por aqui: se der erro, vira exceção com o nome da tabela.
@@ -100,17 +89,6 @@ const fetchAll = async (table, uid) => {
   return out
 }
 
-const loadAll = async uid => {
-  const st = await db(sb.from('bolso_settings').select('*').eq('user_id', uid).maybeSingle(), 'bolso_settings')
-  const lists = await Promise.all(NAMES.map(n => fetchAll(COLL[n].table, uid)))
-  const data = { ...EMPTY, ...readLook(), ...(st ? fromSettings(st) : {}) }
-  NAMES.forEach((n, i) => {
-    const rows = lists[i].map(COLL[n].from)
-    data[n] = COLL[n].newestFirst ? rows.reverse() : rows
-  })
-  return { data, exists: !!st }
-}
-
 const countRefs = async () => {
   try {
     const { count, error } = await sb.from('bolso_referrals').select('id', { count: 'exact', head: true })
@@ -118,59 +96,20 @@ const countRefs = async () => {
   } catch { return 0 }
 }
 
-// ---------- Dados antigos que só existiam neste aparelho (versão anterior do app) ----------
-// Sobem uma única vez para o banco. Se o banco já tem dados da pessoa, o banco vale.
-const LEGACY = 'bolso:v1'
-const readLegacy = uid => {
-  const owner = lsGet('bolso:owner')
-  if (owner && owner !== uid) return null
-  if (lsGet('bolso:imported:' + uid)) return null
-  let raw
-  try { raw = JSON.parse(lsGet(LEGACY) || 'null') } catch { return null }
-  if (!raw || typeof raw !== 'object') return null
-  const list = v => (Array.isArray(v) ? v.filter(x => x && typeof x === 'object') : [])
-  const goals = list(raw.goals).length ? raw.goals : raw.goal && raw.goal.target > 0 ? [{ id: 1, delays: 0, ...raw.goal }] : []
-  const d = {
-    ...EMPTY,
-    salary: num(raw.salary), payDay: raw.payDay || 5, varEss: num(raw.varEss), reservePct: raw.reservePct ?? 10,
-    variable: !!raw.variable, hue: raw.hue ?? 172, mode: raw.mode, hide: !!raw.hide,
-    fixed: list(raw.fixed), goals: list(goals), deposits: list(raw.deposits), spends: list(raw.spends), earns: list(raw.earns),
-  }
-  return d.salary > 0 || NAMES.some(n => d[n].length) ? d : null
-}
-
-const importLegacy = async (uid, d) => {
-  for (const n of NAMES) {
-    const c = COLL[n]
-    const rows = d[n].map((r, i) => ({
-      user_id: uid, id: Number.isFinite(Number(r.id)) ? Number(r.id) : Date.now() + i, ...c.to(r), updated_at: stamp(),
-    }))
-    for (let i = 0; i < rows.length; i += 400) {
-      await db(sb.from(c.table).upsert(rows.slice(i, i + 400), { onConflict: 'user_id,id' }), c.table)
-    }
-  }
-  await db(sb.from('bolso_settings').upsert({ user_id: uid, ...settingsRow(d), updated_at: stamp() }, { onConflict: 'user_id' }), 'bolso_settings')
-}
-
-// Lê tudo do banco (importando os dados antigos do aparelho, se for o caso).
+// Lê tudo do banco. Quem ainda não tem linha em bolso_settings começa com o estado em branco.
 export const bootstrap = async uid => {
-  let r = await loadAll(uid)
-  const legacy = readLegacy(uid)
-  if (legacy) {
-    if (!r.exists || lsGet('bolso:dirty') === '1') {
-      await importLegacy(uid, legacy)
-      r = await loadAll(uid)
-    }
-    lsSet('bolso:imported:' + uid, '1')
-    lsSet('bolso:dirty', '')
-  }
-  lsSet('bolso:owner', uid)
-  r.data.refs = await countRefs()
-  return r.data
+  const st = await db(sb.from('bolso_settings').select('*').eq('user_id', uid).maybeSingle(), 'bolso_settings')
+  const lists = await Promise.all(NAMES.map(n => fetchAll(COLL[n].table, uid)))
+  const data = { ...EMPTY, ...(st ? fromSettings(st) : {}) }
+  NAMES.forEach((n, i) => {
+    const rows = lists[i].map(COLL[n].from)
+    data[n] = COLL[n].newestFirst ? rows.reverse() : rows
+  })
+  data.refs = await countRefs()
+  return data
 }
 
 // ---------- Ações: cada uma grava na tabela e só depois muda a tela ----------
-// get() devolve o estado atual, set() é o setState, uid() a pessoa logada, fail(e) mostra o erro.
 // Todas devolvem true (salvou) ou false (não salvou).
 export const makeActions = ({ get, set, uid, fail }) => {
   const me = () => { const id = uid(); if (!id) throw new Error('sem sessão'); return id }
@@ -192,13 +131,11 @@ export const makeActions = ({ get, set, uid, fail }) => {
   }
 
   return {
-    // salário, dia de receber, essenciais, reserva, renda variável, cor, tema, ocultar valores
+    // salário, dia de receber, essenciais, reserva, renda variável, cor, tema, ocultar valores, aviso do dia
     saveSettings: guard(async patch => {
       const next = { ...get(), ...patch }
       const d = await db(sb.from('bolso_settings').upsert({ user_id: me(), ...settingsRow(next), updated_at: stamp() }, { onConflict: 'user_id' }).select().single(), 'bolso_settings')
-      const st = fromSettings(d)
-      set(v => ({ ...v, ...st }))
-      writeLook(st)
+      set(v => ({ ...v, ...fromSettings(d) }))
     }),
     addFixed: guard(item => insert('fixed', item)),
     removeFixed: guard(id => remove('fixed', id)),
@@ -238,10 +175,50 @@ export const makeActions = ({ get, set, uid, fail }) => {
   }
 }
 
+// ---------- Resumo para os avisos programados (só no iPhone) ----------
+// Vai para a tabela bolso_push_state; a Edge Function bolso-scheduled-push lê de lá.
+const buildSnapshot = (s, P) => {
+  const dates = (s.spends || []).map(x => okDate(x?.date)).filter(Boolean).sort()
+  return {
+    v: 1,
+    cycleStart: iso(P.start),
+    cycleEnd: iso(P.end),
+    lastSpend: dates.length ? dates[dates.length - 1] : null,
+    bills: (s.fixed || [])
+      .filter(f => f && Number(f.day) >= 1 && Number(f.day) <= 31)
+      .map(f => ({ id: String(f.id), name: String(f.name || 'Conta'), value: num(f.value), day: Number(f.day) })),
+    goals: (P.goals || [])
+      .filter(g => g && num(g.target) > 0)
+      .map(g => ({ id: String(g.id), name: String(g.name || 'Objetivo'), target: num(g.target), saved: num(g.saved) })),
+    budget: {
+      essencial: { used: num(P.spent('essencial')), limit: num(s.varEss) },
+      livre: { used: num(P.spent('livre')), limit: num(P.livreVar) },
+    },
+  }
+}
+
+export function usePushState(uid, ready, s, P) {
+  const last = useRef('')
+  useEffect(() => { last.current = '' }, [uid])
+  useEffect(() => {
+    if (!uid || !ready || !isNative || !P) return
+    const t = setTimeout(async () => {
+      try {
+        const snapshot = buildSnapshot(s, P)
+        const key = JSON.stringify(snapshot)
+        if (key === last.current) return
+        await db(sb.from('bolso_push_state').upsert({ user_id: uid, snapshot, updated_at: stamp() }, { onConflict: 'user_id' }), 'bolso_push_state')
+        last.current = key
+      } catch (e) { console.warn('push_state:', e?.message) }
+    }, 2500)
+    return () => clearTimeout(t)
+  }, [s, P, uid, ready])
+}
+
 // ---------- Hook usado pelo App ----------
 // Devolve { s, phase, err, act, reload }. phase: loading | ready | error
 export function useStore(uid, enabled, onError) {
-  const [s, setS] = useState(() => ({ ...EMPTY, ...readLook() }))
+  const [s, setS] = useState(EMPTY)
   const [phase, setPhase] = useState('loading')
   const [err, setErr] = useState('')
   const sRef = useRef(s)
@@ -260,7 +237,6 @@ export function useStore(uid, enabled, onError) {
     try {
       const data = await bootstrap(uid)
       if (req.current !== mine || uidRef.current !== uid) return
-      writeLook(data)
       setS(data)
       setPhase('ready')
     } catch (e) {
@@ -275,7 +251,7 @@ export function useStore(uid, enabled, onError) {
     if (!enabled || !uid) {
       req.current++
       setPhase('loading')
-      setS(v => ({ ...EMPTY, hue: v.hue, mode: v.mode })) // saiu: não deixa dados de uma pessoa na tela da outra
+      setS(EMPTY) // saiu: não deixa dados de uma pessoa na tela da outra
       return
     }
     load()
