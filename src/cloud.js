@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { createClient } from '@supabase/supabase-js'
 import { makeOauth, makeEnablePush, makeRemovePushToken, authStorage, isNative } from './nativeAuth.js'
 import {
@@ -109,7 +109,8 @@ export function useCloud() {
   const profile = useMemo(() => {
     if (!dbProfile && !rcPlan) return null
     const p = { ...(dbProfile || {}), ...(rcPlan?.plan ? rcPlan : {}) }
-    if (!p.name) p.name = nameOf(user)
+    // O nome do cadastro (editável em Minha conta) vale mais que o do banco
+    p.name = nameOf(user) || p.name
     return p
   }, [dbProfile, rcPlan, user])
 
@@ -121,8 +122,8 @@ export function useCloud() {
         const ins = await sb.from('bolso_profiles')
           .upsert({ user_id: userId, name: nameOf(u) || null }, { onConflict: 'user_id' })
           .select().maybeSingle()
+        // Se o banco não deixar criar o perfil por aqui, segue sem perfil e sem mostrar erro
         data = ins.data
-        error = ins.error
       } else if (!error && data && !data.name && nameOf(u)) {
         // Perfil sem nome (o nome pode chegar depois do login): grava o nome do cadastro
         const up = await sb.from('bolso_profiles').update({ name: nameOf(u) }).eq('user_id', userId).select().maybeSingle()
@@ -255,11 +256,12 @@ export function useCloud() {
   const saveName = async name => {
     const n = (name || '').trim()
     if (!n || !user) return { error: 'Digite seu nome.' }
-    // Função no banco (set_my_name) altera só o nome do próprio usuário
-    const { error } = await sb.rpc('set_my_name', { p_name: n })
+    // O nome fica no cadastro do usuário (não depende de permissão na tabela de perfis)
+    const { data, error } = await sb.auth.updateUser({ data: { name: n, full_name: n } })
     if (error) return { error: error.message }
-    setDbProfile(d => ({ ...(d || {}), user_id: user.id, name: n }))
-    try { await sb.auth.updateUser({ data: { name: n, full_name: n } }) } catch {}
+    if (data?.user) setUser(data.user)
+    // Extra: espelha no perfil do banco se a função set_my_name existir; se falhar, não atrapalha
+    try { await sb.rpc('set_my_name', { p_name: n }) } catch {}
     return {}
   }
 
@@ -269,5 +271,57 @@ export function useCloud() {
   return { user, profile, status: shownStatus, profileErr, logout, buy, restore, applyRef, saveName }
 }
 
-// Sincronização com a nuvem (ainda não implementada). O App.jsx já chama este hook.
-export function useSync() {}
+// ---------- Resumo para os avisos programados ----------
+// Só no iPhone: envia ao servidor um resumo pequeno (vencimentos, metas, limites e data do último gasto)
+// para a Edge Function bolso-scheduled-push decidir quais avisos mandar. Não envia a lista de gastos.
+const isoDate = d => {
+  if (!d) return null
+  if (typeof d === 'string') return d.slice(0, 10)
+  const x = new Date(d)
+  if (isNaN(x)) return null
+  return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`
+}
+
+const num = n => (Number.isFinite(Number(n)) ? Number(n) : 0)
+
+const buildSnapshot = (s, P) => {
+  const dates = (s?.spends || []).map(x => isoDate(x?.date)).filter(Boolean).sort()
+  return {
+    v: 1,
+    cycleStart: isoDate(P?.start),
+    cycleEnd: isoDate(P?.end),
+    lastSpend: dates.length ? dates[dates.length - 1] : null,
+    bills: (s?.fixed || [])
+      .filter(f => f && Number(f.day) >= 1 && Number(f.day) <= 31)
+      .map(f => ({ id: String(f.id), name: String(f.name || 'Conta'), value: num(f.value), day: Number(f.day) })),
+    goals: (P?.goals || [])
+      .filter(g => g && num(g.target) > 0)
+      .map(g => ({ id: String(g.id), name: String(g.name || 'Objetivo'), target: num(g.target), saved: num(g.saved) })),
+    budget: {
+      essencial: { used: num(P?.spent?.('essencial')), limit: num(s?.varEss) },
+      livre: { used: num(P?.spent?.('livre')), limit: num(P?.livreVar) },
+    },
+  }
+}
+
+// Sincronização do resumo com a nuvem. Espera 2,5 s depois da última mudança e só envia se algo mudou.
+export function useSync(s, setS, ok, user, profile, P) {
+  const last = useRef('')
+  const uid = user?.id
+  useEffect(() => { last.current = '' }, [uid])
+  useEffect(() => {
+    if (!ok || !uid || !isNative || !P) return
+    const t = setTimeout(async () => {
+      try {
+        const snapshot = buildSnapshot(s, P)
+        const key = JSON.stringify(snapshot)
+        if (key === last.current) return
+        const { error } = await sb.from('bolso_push_state')
+          .upsert({ user_id: uid, snapshot, updated_at: new Date().toISOString() }, { onConflict: 'user_id' })
+        if (error) console.warn('push_state:', error.message)
+        else last.current = key
+      } catch (e) { console.warn('push_state:', e?.message) }
+    }, 2500)
+    return () => clearTimeout(t)
+  }, [s, P, ok, uid])
+}
