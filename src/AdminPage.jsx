@@ -94,7 +94,7 @@ function Users() {
       <ul className="list">
         {shown.map(r => (
           <li key={r.user_id} style={{ flexWrap: 'wrap', gap: 8 }}>
-            <span>{r.name || 'Sem nome'}<small>{r.email.replace('@tel.meubolso.app', '')} · criado {fmt(r.created_at)}{r.referred_by ? ` · indicado por ${r.referred_by}` : ''}</small></span>
+            {(r.email || '').replace(/@(tel\.)?meubolso\.app$/, '')}
             <em className={TONE[r.situacao]}>{r.situacao}{r.situacao === 'assinante' ? ` · ${r.plan}` : ''}</em>
             <small>{r.situacao === 'assinante' ? `até ${fmt(r.plan_until)}` : `teste até ${fmt(r.trial_until)}`}</small>
             <button className="ghost" disabled={busy === r.user_id} onClick={() => setPlan(r.user_id, 'premium')}>Premium 30d</button>

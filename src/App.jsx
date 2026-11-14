@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 import { Ganhos, Relatorio, Dicas, controlAlerts, addMonth, TIPS0 } from './Extras'
-import { useCloud, tierOf, sb } from './cloud'
+import { useCloud, tierOf } from './cloud'
 import { useStore, usePushState } from './db'
 import AdminPage from './AdminPage'
 import { Auth, Paywall, Conta } from './Account'
@@ -524,58 +524,6 @@ function Plano({ s, act, P, say }) {
     </div>
   )
 }
-function Diag() {
-  const [out, setOut] = useState('')
-  const [open, setOpen] = useState(false)
-  const run = async () => {
-    setOpen(true)
-    setOut('Testando…')
-    const L = []
-    const log = (k, v) => L.push(`${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`)
-    try {
-      log('site', location.href)
-      log('projeto do app', sb.supabaseUrl)
-      const { data: { session } } = await sb.auth.getSession()
-      const uid = session?.user?.id
-      log('logado', uid ? `sim (${uid})` : 'NÃO: sem sessão, nada grava')
-      if (uid) {
-        const id = Date.now()
-        const ins = await sb.from('bolso_spends').insert({ user_id: uid, id, descr: 'diagnostico', value: 1, bucket: 'livre', date: new Date().toISOString().slice(0, 10) }).select()
-        log('1) gravar gasto', ins.error ? ins.error : 'OK')
-        const sel = await sb.from('bolso_spends').select('id,descr').eq('user_id', uid)
-        log('2) ler gastos', sel.error ? sel.error : `${sel.data.length} linha(s)`)
-        const del = await sb.from('bolso_spends').delete().eq('user_id', uid).eq('id', id)
-        log('3) apagar o teste', del.error ? del.error : 'OK')
-        const st = await sb.from('bolso_settings').select('*').eq('user_id', uid).maybeSingle()
-        log('4) ler configurações', st.error ? st.error : st.data ? 'linha existe' : 'sem linha ainda (normal se nunca salvou o salário)')
-        const pf = await sb.from('bolso_profiles').select('user_id,name,plan').eq('user_id', uid).maybeSingle()
-        log('5) ler perfil', pf.error ? pf.error : pf.data ? 'OK' : 'sem perfil')
-      }
-    } catch (e) {
-      log('ERRO', e?.message || String(e))
-    }
-    setOut(L.join('\n'))
-  }
-  return (
-    <>
-      <button onClick={run} style={{ position: 'fixed', left: 8, bottom: 8, zIndex: 99999, padding: '8px 12px', borderRadius: 8, border: 0, background: '#e11', color: '#fff', fontWeight: 700 }}>
-        Diagnóstico
-      </button>
-      {open && (
-        <pre onClick={() => setOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 99998, margin: 0, padding: 16, paddingTop: 48, overflow: 'auto', background: '#000', color: '#0f0', fontSize: 12, whiteSpace: 'pre-wrap' }}>
-          {out}
-          {'\n\n(toque para fechar)'}
-        </pre>
-      )}
-    </>
-  )
-}
-
 export default function App() {
-  return (
-    <>
-      {location.pathname.replace(/\/$/, '') === '/meubolsinho' ? <AdminPage /> : <Main />}
-      <Diag />
-    </>
-  )
+  return location.pathname.replace(/\/$/, '') === '/meubolsinho' ? <AdminPage /> : <Main />
 }
