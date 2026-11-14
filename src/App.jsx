@@ -171,7 +171,7 @@ function Main() {
   useEffect(() => { if ('goal' in s) setS(normalize) }, [s])
   const set = patch => setS(v => ({ ...v, ...patch }))
   const P = useMemo(() => plan(s, tier), [s, tier])
-  useSync(s, setS, ok, cloud.user, cloud.profile)
+useSync(s, setS, ok, cloud.user, cloud.profile, P)
   const A = useMemo(() => alerts(s, P), [s, P])
   const say = t => { setToast(t); setTimeout(() => setToast(''), 3200) }
   const m = n => (s.hide ? 'R$ •••••' : brl(n))
