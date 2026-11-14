@@ -18,6 +18,16 @@ export const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   },
 })
 
+// Limpa dados que versões antigas guardavam no aparelho (a fonte agora é só o banco)
+;(() => {
+  try {
+    ;['bolso:v1', 'bolso:owner', 'bolso:dirty', 'bolso:look', 'bolso:notifDay'].forEach(k => localStorage.removeItem(k))
+    Object.keys(localStorage)
+      .filter(k => k.startsWith('bolso:plan:') || k.startsWith('bolso:imported:'))
+      .forEach(k => localStorage.removeItem(k))
+  } catch {}
+})()
+
 export const isPlus = profile => profile?.plan === 'premium' || profile?.plan === 'plus'
 
 export const tierOf = profile => {
