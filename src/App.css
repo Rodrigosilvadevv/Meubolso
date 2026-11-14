@@ -142,3 +142,4 @@ b[style]{width:10px;height:10px;border-radius:50%;flex:none}
 .danger{border-color:var(--neg)}
 .cta:disabled{opacity:.5;cursor:not-allowed}
 a{color:var(--ac)}
+.app{padding-top:env(safe-area-inset-top)}

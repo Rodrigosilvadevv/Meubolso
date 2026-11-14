@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { sb, oauth, signUpPhone, signInPhone, enablePush, isPlus, parseRef } from './cloud'
 import { isNative } from './nativeAuth.js'
+import NomeEditor from './NomeEditor.jsx'
 import { getPrices, manageSubscription } from './purchases'
 import { Indique } from './Extras'
 
@@ -291,7 +292,7 @@ function Perfil({ cloud, say, P }) {
     <div className="grid">
       <section>
         <h2>Minha conta</h2>
-        <p>{p?.name}</p>
+        <NomeEditor cloud={cloud} say={say} />
         <button className="ghost" onClick={push}>Ativar avisos no aparelho</button>
         <button className="ghost" onClick={cloud.logout}>Sair</button>
         <p className="tiny"><Policy /></p>
