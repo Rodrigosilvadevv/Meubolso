@@ -255,11 +255,10 @@ export function useCloud() {
   const saveName = async name => {
     const n = (name || '').trim()
     if (!n || !user) return { error: 'Digite seu nome.' }
-    const { data, error } = await sb.from('bolso_profiles')
-      .upsert({ user_id: user.id, name: n }, { onConflict: 'user_id' })
-      .select().maybeSingle()
+    // Função no banco (set_my_name) altera só o nome do próprio usuário
+    const { error } = await sb.rpc('set_my_name', { p_name: n })
     if (error) return { error: error.message }
-    setDbProfile(data)
+    setDbProfile(d => ({ ...(d || {}), user_id: user.id, name: n }))
     try { await sb.auth.updateUser({ data: { name: n, full_name: n } }) } catch {}
     return {}
   }
