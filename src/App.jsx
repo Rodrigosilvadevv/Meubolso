@@ -524,6 +524,7 @@ function Plano({ s, act, P, say }) {
     </div>
   )
 }
+
 export default function App() {
   return location.pathname.replace(/\/$/, '') === '/meubolsinho' ? <AdminPage /> : <Main />
 }
