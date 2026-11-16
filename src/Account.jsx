@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { sb, oauth, signUpPhone, signInPhone, enablePush, isPlus, parseRef } from './cloud'
 import { isNative } from './nativeAuth.js'
 import NomeEditor from './NomeEditor.jsx'
@@ -153,7 +153,7 @@ export function Paywall({ cloud }) {
         <section className="hero-card">
           <h2>Premium Plus</h2>
           <p className="big">{prices.plus || 'R$ 29,90'}<small>por mês</small></p>
-          <p className="muted">Tudo do Premium, até 5 objetivos e chat com assistente de IA.</p>
+          <p className="muted">Tudo do Premium, até 5 objetivos, importação de extrato (.OFX) e chat com assistente de IA.</p>
           <button className="cta" disabled={!!busy} onClick={() => buy('plus')}>{busy === 'plus' ? 'Aguarde…' : 'Assinar Plus'}</button>
         </section>
       </div>
@@ -225,19 +225,37 @@ export function Chat({ s, P, cloud, say }) {
   )
 }
 
-export function Visual({ s, set, say, onExit }) {
+export function Visual({ s, set, say, onExit, live, setLive }) {
   const [perm, setPerm] = useState('Notification' in window ? Notification.permission : 'unsupported')
   const ask = async () => {
     const r = await Notification.requestPermission()
     setPerm(r)
     say(r === 'granted' ? 'Avisos ativados neste aparelho' : 'Permissão não concedida')
   }
+
+  // A cor muda na tela na hora (live) e só vai para o banco quando a pessoa para de arrastar.
+  // Antes, cada pedacinho da barra gravava no banco e a tela só mudava depois da resposta: a barra travava e quebrava.
+  const hue = live ?? s.hue
+  const save = async v => {
+    if (v !== s.hue) await set({ hue: v })
+    setLive(cur => (cur === v ? null : cur))
+  }
+  useEffect(() => {
+    if (live == null) return
+    const t = setTimeout(() => save(live), 600)
+    return () => clearTimeout(t)
+  }, [live])
+  // Se a pessoa sair da aba logo depois de mexer, ainda salva
+  const last = useRef({})
+  last.current = { live, save }
+  useEffect(() => () => { const { live: v, save: fn } = last.current; if (v != null) fn(v) }, [])
+
   return (
     <div className="grid">
       <section>
         <h2>Cor do seu app</h2>
-        <div className="sw">{[172, 215, 265, 330, 18, 45].map(h => <button key={h} aria-label={`Matiz ${h}`} className={s.hue === h ? 'on' : ''} style={{ background: `hsl(${h} 85% 60%)` }} onClick={() => set({ hue: h })} />)}</div>
-        <label>Ajuste fino<input type="range" min="0" max="360" value={s.hue} onChange={e => set({ hue: +e.target.value })} className="hue" /></label>
+        <div className="sw">{[172, 215, 265, 330, 18, 45].map(h => <button key={h} aria-label={`Matiz ${h}`} className={hue === h ? 'on' : ''} style={{ background: `hsl(${h} 85% 60%)` }} onClick={() => { setLive(h); save(h) }} />)}</div>
+        <label>Ajuste fino<input type="range" min="0" max="360" value={hue} onChange={e => setLive(+e.target.value)} className="hue" /></label>
         <div className="seg">{[['dark', 'Escuro'], ['light', 'Claro']].map(([k, l]) => <button key={k} className={s.mode === k ? 'on' : ''} onClick={() => set({ mode: k })}>{l}</button>)}</div>
       </section>
       <section>
@@ -306,7 +324,7 @@ function Perfil({ cloud, say, P }) {
           {paid ? (until ? `Renova em ${until}` : 'Assinatura ativa')
             : left > 0 ? `Mês grátis: ${left} ${left === 1 ? 'dia' : 'dias'} restantes` : 'Sem plano ativo'}
         </p>
-        <p className="tiny">Inclui até {P.limit} {P.limit === 1 ? 'objetivo' : 'objetivos'}{P.canVar ? ' e renda variável' : ''}.</p>
+        <p className="tiny">Inclui até {P.limit} {P.limit === 1 ? 'objetivo' : 'objetivos'}{P.canVar ? ', renda variável' : ''}{P.canImport ? ' e importação de extrato (.OFX)' : ''}.</p>
 
         {!paid && <>
           <button className="cta" disabled={!!busy} onClick={() => up('premium')}>{busy === 'premium' ? 'Aguarde…' : `Assinar Premium ${prices.premium || 'R$ 19,90'}/mês`}</button>
@@ -340,7 +358,7 @@ export function Conta(props) {
       {sub === 'conta' && <Perfil {...props} />}
       {sub === 'indique' && <Indique s={s} say={say} code={cloud.profile?.ref_code} refresh={props.refresh} />}
       {sub === 'chat' && <Chat {...props} />}
-      {sub === 'visual' && <Visual s={s} set={set} say={say} onExit={cloud.logout} />}
+      {sub === 'visual' && <Visual s={s} set={set} say={say} onExit={cloud.logout} live={props.liveHue} setLive={props.setLiveHue} />}
     </>
   )
 }

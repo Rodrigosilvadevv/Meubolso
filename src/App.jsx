@@ -6,6 +6,8 @@ import { useStore, usePushState } from './db'
 import AdminPage from './AdminPage'
 import { Auth, Paywall, Conta } from './Account'
 import { Ciclo } from './Ciclo'
+import { ImportCard } from './ImportOfx'
+import { CAT_BY_ID } from './categorize'
 
 
 const LEVELS = {
@@ -97,7 +99,8 @@ function plan(s0, tier) {
 
   return {
     today, start, end, earned, daysLeft, goals, goalNeed, livreVar, rem, spent, cyc, eta, free, left, reserve,
-    tier, canVar, limit: LIMITS[tier], salary: s.salary,
+    // Premium, Plus e o mês grátis (que conta como Premium) têm renda variável; importar extrato é só do Plus.
+    tier, canVar, canImport: tier === 'plus', limit: LIMITS[tier], salary: s.salary,
     split: { essencial: essFixed + s.varEss, imprevisto: reserve, objetivo: goalNeed, livre: Math.max(0, livreVar) + livFixed },
     daily, perDay, todayLeft, todaySpent, todayImp, todayAll: todaySpent + todayImp,
     bills, isPaid,
@@ -168,6 +171,7 @@ function Main() {
   const [bell, setBell] = useState(false)
   const [toast, setToast] = useState('')
   const [later, setLater] = useState([]) // contas em que a pessoa tocou "ainda não" (só nesta sessão)
+  const [liveHue, setLiveHue] = useState(null) // cor em pré-visualização enquanto a barra é arrastada (ainda não salva)
   const [dayKey, setDayKey] = useState(() => toISO(new Date()))
   const say = (t, ms = 3200) => { setToast(t); setTimeout(() => setToast(''), ms) }
 
@@ -211,7 +215,7 @@ function Main() {
     act.saveSettings({ notifDay: day })
   }, [phase])
 
-  const cls = `app ${s.mode}`, sty = { '--h': s.hue }
+  const cls = `app ${s.mode}`, sty = { '--h': liveHue ?? s.hue }
   if (!ok || locked) {
     return (
       <div className={cls} style={sty}>
@@ -240,7 +244,7 @@ function Main() {
   }
 
   const first = (cloud.profile?.name || 'Você').split(' ')[0], hr = new Date().getHours()
-  const props = { s, act, P, A, m, go, say, later, setLater, refresh: store.refreshRefs }
+  const props = { s, act, P, A, m, go, say, later, setLater, refresh: store.refreshRefs, uid: cloud.user?.id, set: act.saveSettings, liveHue, setLiveHue }
   return (
     <div className={cls} style={sty}>
       <aside>
@@ -432,7 +436,7 @@ function Inicio({ s, act, P, A, m, go, say, later, setLater }) {
   )
 }
 
-function Gastos({ s, act, P, m, say, later, setLater }) {
+function Gastos({ s, act, P, m, say, later, setLater, go, uid }) {
   const todayISO = toISO(P.today)
   const [f, setF] = useState({ desc: '', value: 0, bucket: 'essencial', date: todayISO })
   const [busy, setBusy] = useState(false)
@@ -508,7 +512,8 @@ function Gastos({ s, act, P, m, say, later, setLater }) {
           {['essencial', 'imprevisto', 'livre'].map(k => <li key={k}><b style={{ background: LEVELS[k].color }} />{LEVELS[k].label} <span>{m(byBucket(k))}</span></li>)}
         </ul>
       </section>
-      {varOn && <Ganhos s={s} act={act} P={P} m={m} say={say} />}
+      <ImportCard canImport={P.canImport} go={go} uid={uid} act={act} m={m} say={say} />
+      {(varOn || s.earns.some(x => x.date >= toISO(P.start) && x.date < toISO(P.end))) && <Ganhos s={s} act={act} P={P} m={m} say={say} />}
       <section className="wide">
         <div className="cd-nav">
           <button className="ghost mini" aria-label="Ciclo anterior" onClick={() => setOff(off + 1)} disabled={off >= 12}>‹</button>
@@ -549,7 +554,7 @@ function Gastos({ s, act, P, m, say, later, setLater }) {
             {(dayRow ? dayRow.items : []).map(x => (
               <li key={x.id}>
                 <b style={{ background: (LEVELS[x.bucket] || LEVELS.essencial).color }} />
-                <span>{x.desc || (LEVELS[x.bucket] || LEVELS.essencial).label}<small>{(LEVELS[x.bucket] || LEVELS.essencial).label}</small></span>
+                <span>{x.desc || (LEVELS[x.bucket] || LEVELS.essencial).label}<small>{(LEVELS[x.bucket] || LEVELS.essencial).label}{CAT_BY_ID[x.category] ? ` · ${CAT_BY_ID[x.category].label}` : ''}</small></span>
                 <em>{m(x.value)}</em>
                 <button className="x" aria-label="Remover" onClick={() => act.removeSpend(x.id)}>×</button>
               </li>
@@ -700,7 +705,7 @@ function Plano({ s, act, P, say }) {
         <h2>Salário</h2>
         <form className="form" onSubmit={saveSettings('a', a, 'Salário salvo')}>
           <label className="chk"><input type="checkbox" checked={varOn} disabled={!P.canVar} onChange={e => setA({ ...a, variable: e.target.checked })} />Minha renda varia (diarista, autônomo, apps)</label>
-          {!P.canVar && <p className="tiny">Renda variável faz parte do Premium e do Plus.</p>}
+          {!P.canVar && <p className="tiny">Renda variável faz parte do Premium, do Plus e do mês grátis.</p>}
           <label>{varOn ? 'Estimativa mínima do mês' : 'Valor líquido'}<Num placeholder="Ex.: 2500" value={a.salary} onChange={v => setA({ ...a, salary: v })} /></label>
           <label>Dia que recebo<Int min={1} max={31} placeholder="Ex.: 5" value={a.payDay} onChange={v => setA({ ...a, payDay: v })} /></label>
           <button className="cta" disabled={busy === 'a'}>{busy === 'a' ? 'Salvando…' : 'Salvar salário'}</button>

@@ -25,6 +25,13 @@ export const EMPTY = {
   refs: 0, hue: 172, mode: 'dark', hide: false, notifDay: '',
 }
 
+// Campos extras de gastos/ganhos: categoria e dados da importação OFX.
+// Só são enviados quando existem, para o app continuar funcionando antes de rodar o SQL novo.
+const extra = r => ({
+  ...(r.category ? { category: String(r.category) } : {}),
+  ...(r.fitid ? { fitid: String(r.fitid), source: 'ofx', raw_ofx_data: r.raw ?? null } : {}),
+})
+
 // ---------- Tabelas: app <-> banco ----------
 const COLL = {
   fixed: {
@@ -44,13 +51,13 @@ const COLL = {
   },
   spends: {
     table: 'bolso_spends', newestFirst: true,
-    to: r => ({ descr: String(r.desc ?? ''), value: money(r.value), bucket: String(r.bucket || 'essencial'), date: okDate(r.date) || isoNow() }),
-    from: d => ({ id: Number(d.id), desc: d.descr, value: Number(d.value), bucket: d.bucket, date: d.date }),
+    to: r => ({ descr: String(r.desc ?? ''), value: money(r.value), bucket: String(r.bucket || 'essencial'), date: okDate(r.date) || isoNow(), ...extra(r) }),
+    from: d => ({ id: Number(d.id), desc: d.descr, value: Number(d.value), bucket: d.bucket, date: d.date, category: d.category || '' }),
   },
   earns: {
     table: 'bolso_earns', newestFirst: true,
-    to: r => ({ descr: String(r.desc ?? ''), value: money(r.value), date: okDate(r.date) || isoNow() }),
-    from: d => ({ id: Number(d.id), desc: d.descr, value: Number(d.value), date: d.date }),
+    to: r => ({ descr: String(r.desc ?? ''), value: money(r.value), date: okDate(r.date) || isoNow(), ...extra(r) }),
+    from: d => ({ id: Number(d.id), desc: d.descr, value: Number(d.value), date: d.date, category: d.category || '' }),
   },
 }
 const NAMES = Object.keys(COLL)
@@ -120,6 +127,35 @@ export const bootstrap = async uid => {
   return data
 }
 
+// ---------- Importação de extrato (OFX) ----------
+const RULES = 'bolso_merchant_rules'
+
+export const loadMerchantRules = uid =>
+  db(sb.from(RULES).select('id,keyword,category_id,pillar').eq('user_id', uid).order('created_at'), RULES)
+
+// Cria ou atualiza regras (a palavra-chave é única por pessoa)
+export const saveMerchantRules = async (uid, rules) => {
+  const byKey = new Map()
+  rules.forEach(r => { if (r.keyword && r.category_id) byKey.set(r.keyword, { user_id: uid, keyword: r.keyword, category_id: r.category_id, pillar: r.pillar }) })
+  if (!byKey.size) return []
+  return db(sb.from(RULES).upsert([...byKey.values()], { onConflict: 'user_id,keyword' }).select('id,keyword,category_id,pillar'), RULES)
+}
+
+export const deleteMerchantRule = (uid, id) => db(sb.from(RULES).delete().eq('user_id', uid).eq('id', id), RULES)
+
+// Quais identificadores do extrato já foram importados antes (gastos e entradas)
+export const findImported = async (uid, fitids) => {
+  const have = new Set()
+  const ids = [...new Set(fitids.filter(Boolean))]
+  for (const table of [COLL.spends.table, COLL.earns.table]) {
+    for (let i = 0; i < ids.length; i += 100) {
+      const data = await db(sb.from(table).select('fitid').eq('user_id', uid).in('fitid', ids.slice(i, i + 100)), table)
+      ;(data || []).forEach(r => have.add(r.fitid))
+    }
+  }
+  return have
+}
+
 // ---------- Ações: cada uma grava na tabela e só depois muda a tela ----------
 // Todas devolvem true (salvou) ou false (não salvou).
 export const makeActions = ({ get, set, uid, fail }) => {
@@ -163,6 +199,26 @@ export const makeActions = ({ get, set, uid, fail }) => {
       await db(sb.from('bolso_paid').delete().eq('user_id', me()).eq('fixed_id', fixedId).eq('cycle_start', cycle), 'bolso_paid')
       set(v => ({ ...v, paid: (v.paid || []).filter(p => !(p.fixedId === fixedId && p.cycle === cycle)) }))
     }),
+    // Grava vários gastos/ganhos de uma vez (importação OFX). Linhas que já existem (mesmo fitid) são ignoradas.
+    // Devolve { spends, earns } com quantas entraram de verdade, ou null se falhou (a tela não muda).
+    importOfx: async ({ spends = [], earns = [] }) => {
+      try {
+        const uidNow = me()
+        const out = { spends: 0, earns: 0 }
+        for (const [name, rows] of [['spends', spends], ['earns', earns]]) {
+          const c = COLL[name]
+          for (let i = 0; i < rows.length; i += 200) {
+            const payload = rows.slice(i, i + 200).map(r => ({ user_id: uidNow, id: newId(), ...c.to(r), updated_at: stamp() }))
+            const data = await db(sb.from(c.table).upsert(payload, { onConflict: 'user_id,fitid', ignoreDuplicates: true }).select(), c.table)
+            const added = (data || []).map(c.from)
+            if (!added.length) continue
+            out[name] += added.length
+            list(name, l => [...added.slice().reverse(), ...l])
+          }
+        }
+        return out
+      } catch (e) { console.warn('import:', e?.message); fail(e); return null }
+    },
     addSpend: guard(item => insert('spends', item)),
     removeSpend: guard(id => remove('spends', id)),
     addEarn: guard(item => insert('earns', item)),
