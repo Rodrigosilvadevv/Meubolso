@@ -9,13 +9,14 @@ const Policy = () => <a href="/privacidade.html" target="_blank" rel="noreferrer
 const Eula = () => <a href="https://www.apple.com/legal/internet-services/itunes/dev/stdeula/" target="_blank" rel="noreferrer">Termos de Uso</a>
 
 export function Auth() {
-  const [mode, setMode] = useState('in')
+  const ref = localStorage.getItem('bolso:ref')
+  // Quem chegou por um link de indicação já abre em "Criar conta"
+  const [mode, setMode] = useState(ref ? 'up' : 'in')
   const [f, setF] = useState({ name: '', tel: '', pass: '' })
   const [accepted, setAccepted] = useState(false)
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
   const [code, setCode] = useState('')
-  const ref = localStorage.getItem('bolso:ref')
 
   const need = () => {
     if (accepted) return true
@@ -337,7 +338,7 @@ export function Conta(props) {
     <>
       <div className="seg" style={{ marginBottom: 14 }}>{SUBS.map(([k, l]) => <button key={k} className={sub === k ? 'on' : ''} onClick={() => setSub(k)}>{l}</button>)}</div>
       {sub === 'conta' && <Perfil {...props} />}
-      {sub === 'indique' && <Indique s={s} say={say} code={cloud.profile?.ref_code} />}
+      {sub === 'indique' && <Indique s={s} say={say} code={cloud.profile?.ref_code} refresh={props.refresh} />}
       {sub === 'chat' && <Chat {...props} />}
       {sub === 'visual' && <Visual s={s} set={set} say={say} onExit={cloud.logout} />}
     </>

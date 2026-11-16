@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
-import { Ganhos, Relatorio, Dicas, controlAlerts, addMonth, TIPS0 } from './Extras'
+import { Ganhos, Relatorio, Dicas, controlAlerts, addMonth, TIPS0, Num, Int, toISO, at, diff, dueIn } from './Extras'
 import { useCloud, tierOf } from './cloud'
 import { useStore, usePushState } from './db'
 import AdminPage from './AdminPage'
@@ -17,11 +17,10 @@ const LEVELS = {
 // Quantos objetivos cada nível pode ter. Renda variável: só premium e plus.
 const LIMITS = { free: 1, premium: 3, plus: 5 }
 const brl = n => (n || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
-const pad = n => String(n).padStart(2, '0')
-const toISO = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
-const at = (y, m, d) => new Date(y, m, Math.min(d, new Date(y, m + 1, 0).getDate()))
-const diff = (a, b) => Math.round((b - a) / 864e5)
 const when = n => (n <= 0 ? 'hoje' : n === 1 ? 'amanhã' : `em ${n} dias`)
+const MES = ['jan', 'fev', 'mar', 'abr', 'mai', 'jun', 'jul', 'ago', 'set', 'out', 'nov', 'dez']
+const DIA = ['domingo', 'segunda-feira', 'terça-feira', 'quarta-feira', 'quinta-feira', 'sexta-feira', 'sábado']
+const dm = iso => `${iso.slice(8, 10)}/${iso.slice(5, 7)}`
 // Banners e dicas são configuração fixa do app (não são dados da pessoa)
 const CFG = { banners: [], tips: TIPS0 }
 
@@ -32,6 +31,13 @@ function cycle(payDay) {
   const p = at(y, m, payDay)
   const paid = today >= p
   return { today, start: paid ? p : at(y, m - 1, payDay), end: paid ? at(y, m + 1, payDay) : p }
+}
+
+// Ciclo k ciclos atrás (0 = o atual)
+function cycleAt(P, payDay, k) {
+  if (k === 0) return { start: P.start, end: P.end }
+  const y = P.start.getFullYear(), m = P.start.getMonth()
+  return { start: at(y, m - k, payDay), end: at(y, m - k + 1, payDay) }
 }
 
 function plan(s0, tier) {
@@ -72,28 +78,39 @@ function plan(s0, tier) {
   // "Pode gastar hoje" = limite do dia menos o que já foi gasto hoje.
   const poolStart = Math.max(0, rem.essencial + spentToday('essencial')) + Math.max(0, rem.livre + spentToday('livre'))
   const perDay = poolStart / daysLeft
-  const todayLeft = Math.max(0, perDay - spentToday('essencial') - spentToday('livre'))
+  const todaySpent = spentToday('essencial') + spentToday('livre')
+  const todayImp = spentToday('imprevisto')
+  const todayLeft = Math.max(0, perDay - todaySpent)
 
   // Quanto sobra por mês depois de tudo, menos os objetivos
   const free = s.salary - essFixed - livFixed - s.varEss - reserve
   // A previsão só faz sentido quando o plano NÃO fecha no prazo dos objetivos
   const eta = livreVar < 0 && free > 0 && left > 0 ? new Date(today.getFullYear(), today.getMonth() + Math.ceil(left / free), 1) : null
+
+  // Contas fixas do ciclo e se a pessoa já confirmou o pagamento
+  const paidIds = new Set((s.paid || []).filter(p => p.cycle === a0).map(p => Number(p.fixedId)))
+  const isPaid = id => paidIds.has(Number(id))
+  const key = b => (b.due ? b.due.getTime() : 9e15)
+  const bills = s.fixed
+    .map(f => { const due = dueIn(f.day, start, end); return { f, due, n: due ? diff(today, due) : null, paid: isPaid(f.id) } })
+    .sort((p, q) => key(p) - key(q))
+
   return {
     today, start, end, earned, daysLeft, goals, goalNeed, livreVar, rem, spent, cyc, eta, free, left, reserve,
-    tier, canVar, limit: LIMITS[tier],
+    tier, canVar, limit: LIMITS[tier], salary: s.salary,
     split: { essencial: essFixed + s.varEss, imprevisto: reserve, objetivo: goalNeed, livre: Math.max(0, livreVar) + livFixed },
-    daily, perDay, todayLeft,
+    daily, perDay, todayLeft, todaySpent, todayImp, todayAll: todaySpent + todayImp,
+    bills, isPaid,
   }
 }
 
 function alerts(s, P) {
-  const a = [], { today } = P
-  const y = today.getFullYear(), m = today.getMonth()
-  s.fixed.filter(f => f.day).map(f => {
-    const d = at(y, m, f.day)
-    return { f, n: diff(today, d >= today ? d : at(y, m + 1, f.day)) }
-  }).filter(x => x.n <= 5).sort((p, q) => p.n - q.n).forEach(({ f, n }) =>
-    a.push({ id: 'due' + f.id, tone: n <= 1 ? 'warn' : 'info', title: `${f.name} vence ${when(n)}`, text: `${brl(f.value)} — deixe separado para não apertar.`, tab: 'plano' }))
+  const a = []
+  // Contas ainda não confirmadas: atrasadas ou vencendo em até 5 dias
+  P.bills.filter(b => !b.paid && b.n !== null && b.n <= 5).forEach(({ f, n }) => {
+    if (n < 0) a.push({ id: 'late' + f.id, tone: 'bad', title: `${f.name} venceu ${n === -1 ? 'ontem' : `há ${-n} dias`}`, text: `${brl(f.value)} — já pagou? Confirme na tela Início.`, tab: 'inicio' })
+    else a.push({ id: 'due' + f.id, tone: n <= 1 ? 'warn' : 'info', title: `${f.name} vence ${when(n)}`, text: `${brl(f.value)} — deixe separado para não apertar.`, tab: 'inicio' })
+  })
   if (s.salary > 0 && P.daysLeft <= 5)
     a.push({ id: 'pay', tone: 'good', title: `Seu salário cai ${when(P.daysLeft)}`, text: 'Hora de revisar o que sobrou e planejar o próximo ciclo.', tab: 'inicio' })
   P.goals.forEach(g => {
@@ -128,16 +145,13 @@ const Ic = ({ n }) => (
 const TABS = [['inicio', 'Início', 'home'], ['gastos', 'Gastos', 'list'], ['meta', 'Metas', 'target'], ['relatorio', 'Relatório', 'chart'], ['plano', 'Plano', 'sliders'], ['dicas', 'Dicas', 'bulb'], ['conta', 'Conta', 'user']]
 const SUBTABS = ['indique', 'chat', 'visual']
 
-const Num = ({ value, onChange, ...p }) => (
-  <input type="number" inputMode="decimal" min="0" step="0.01" value={value || ''}
-    onChange={e => onChange(parseFloat(e.target.value) || 0)} {...p} />
-)
-
 function useCount(v) {
   const [x, setX] = useState(0)
+  const cur = useRef(0)
+  cur.current = x
   useEffect(() => {
-    let f, t0; const a = x
-    const run = t => { t0 ??= t; const p = Math.min(1, (t - t0) / 800); setX(a + (v - a) * (1 - Math.pow(1 - p, 3))); if (p < 1) f = requestAnimationFrame(run) }
+    let f, t0; const a = cur.current
+    const run = t => { t0 ??= t; const p = Math.min(1, (t - t0) / 600); setX(a + (v - a) * (1 - Math.pow(1 - p, 3))); if (p < 1) f = requestAnimationFrame(run) }
     f = requestAnimationFrame(run)
     return () => cancelAnimationFrame(f)
   }, [v])
@@ -153,15 +167,25 @@ function Main() {
   const [sub, setSub] = useState('conta')
   const [bell, setBell] = useState(false)
   const [toast, setToast] = useState('')
+  const [later, setLater] = useState([]) // contas em que a pessoa tocou "ainda não" (só nesta sessão)
+  const [dayKey, setDayKey] = useState(() => toISO(new Date()))
   const say = (t, ms = 3200) => { setToast(t); setTimeout(() => setToast(''), ms) }
+
+  // Se o app ficar aberto de um dia para o outro, "hoje" e o limite do dia se renovam sozinhos.
+  useEffect(() => {
+    const tick = () => setDayKey(toISO(new Date()))
+    const t = setInterval(tick, 60000)
+    document.addEventListener('visibilitychange', tick)
+    return () => { clearInterval(t); document.removeEventListener('visibilitychange', tick) }
+  }, [])
 
   // Os dados moram no banco: cada ação grava na tabela e só então a tela muda.
   const store = useStore(cloud.user?.id, ok, e => say(`Não foi possível salvar: ${e?.message || e}`, 7000))
   const { act, phase } = store
   const s = useMemo(() => ({ ...store.s, cfg: CFG }), [store.s])
-  const P = useMemo(() => plan(s, tier), [s, tier])
+  const P = useMemo(() => plan(s, tier), [s, tier, dayKey])
   const A = useMemo(() => alerts(s, P), [s, P])
-    usePushState(cloud.user?.id, phase === 'ready', s, P)
+  usePushState(cloud.user?.id, phase === 'ready', s, P)
   const m = n => (s.hide ? 'R$ •••••' : brl(n))
   const go = t => {
     if (SUBTABS.includes(t)) { setSub(t); t = 'conta' }
@@ -178,8 +202,7 @@ function Main() {
     if (!ok) opened.current = false
   }, [phase, ok])
 
-  
-   // Aviso do dia (navegador), no máximo uma vez por dia (o dia fica salvo no banco)
+  // Aviso do dia (navegador), no máximo uma vez por dia (o dia fica salvo no banco)
   useEffect(() => {
     if (phase !== 'ready' || !A[0] || !('Notification' in window) || Notification.permission !== 'granted') return
     const day = toISO(P.today)
@@ -192,7 +215,7 @@ function Main() {
   if (!ok || locked) {
     return (
       <div className={cls} style={sty}>
-       {cloud.status === 'loading' ? <div className="boot" role="status" aria-label="Carregando"><i /><span>Meu bolso</span></div>
+        {cloud.status === 'loading' ? <div className="boot" role="status" aria-label="Carregando"><i /><span>Meu bolso</span></div>
           : cloud.status === 'out' ? <Auth />
           : <Paywall cloud={cloud} />}
       </div>
@@ -217,7 +240,7 @@ function Main() {
   }
 
   const first = (cloud.profile?.name || 'Você').split(' ')[0], hr = new Date().getHours()
-  const props = { s, act, P, A, m, go, say }
+  const props = { s, act, P, A, m, go, say, later, setLater, refresh: store.refreshRefs }
   return (
     <div className={cls} style={sty}>
       <aside>
@@ -275,17 +298,58 @@ function Banners({ A, s, go }) {
   )
 }
 
-function Inicio({ s, P, A, m, go }) {
+// Pergunta "já pagou?" para as contas que vencem hoje (ou já venceram e ainda não foram confirmadas)
+function DueToday({ P, act, m, say, later, setLater }) {
+  const [busy, setBusy] = useState(0)
+  const cyc = toISO(P.start)
+  const pend = P.bills.filter(b => !b.paid && b.n !== null && b.n <= 0 && !later.includes(b.f.id))
+  if (pend.length === 0) return null
+  const pay = async f => {
+    if (busy) return
+    setBusy(f.id)
+    const ok = await act.payFixed(f.id, cyc)
+    setBusy(0)
+    if (ok) say(`${f.name} marcada como paga`)
+  }
+  return (
+    <section className="wide due" aria-live="polite">
+      <h2>{pend.length === 1 ? 'Uma conta pede sua atenção' : `${pend.length} contas pedem sua atenção`}</h2>
+      <ul className="list">
+        {pend.map(({ f, n, due }) => (
+          <li key={f.id}>
+            <b style={{ background: LEVELS[f.level].color }} />
+            <span>{f.name} · {m(f.value)}<small>{n === 0 ? 'Vence hoje' : `Venceu dia ${dm(toISO(due))}`}. Já pagou?</small></span>
+            <button className="cta mini" disabled={busy === f.id} onClick={() => pay(f)}>{busy === f.id ? 'Salvando…' : 'Sim, já paguei'}</button>
+            <button className="ghost mini" onClick={() => setLater([...later, f.id])}>Ainda não</button>
+          </li>
+        ))}
+      </ul>
+    </section>
+  )
+}
+
+function Inicio({ s, act, P, A, m, go, say, later, setLater }) {
   const [on, setOn] = useState(false)
   useEffect(() => { const t = setTimeout(() => setOn(true), 80); return () => clearTimeout(t) }, [])
-  const total = s.varEss + Math.max(0, P.livreVar)
-  const pct = total > 0 ? Math.max(0, Math.min(1, P.daily / total)) : 0
+  const cyc = toISO(P.start)
+  // O anel mostra quanto do limite DO DIA ainda sobra
+  const pct = P.perDay > 0 ? Math.max(0, Math.min(1, P.todayLeft / P.perDay)) : 0
   const C = 2 * Math.PI * 54
   const day = useCount(P.todayLeft)
+  const over = Math.max(0, P.todaySpent - P.perDay)
   const gp = P.goals.reduce((a, g) => Math.max(a, g.pct), 0)
+  const goals = P.goals.filter(g => g.target > 0)
+  const recent = s.spends.slice(0, 5)
+  const billsTotal = P.bills.reduce((a, b) => a + b.f.value, 0)
+  const billsPaid = P.bills.filter(b => b.paid).reduce((a, b) => a + b.f.value, 0)
   const badges = [['Plano criado', s.salary > 0], ['Primeiro gasto', s.spends.length > 0], ['No orçamento', s.salary > 0 && P.rem.livre >= 0 && P.rem.essencial >= 0], ['Meta 25%', gp >= 25], ['Meta 50%', gp >= 50], ['Meta batida', gp >= 100]]
+  const toggle = async b => {
+    const ok = b.paid ? await act.unpayFixed(b.f.id, cyc) : await act.payFixed(b.f.id, cyc)
+    if (ok) say(b.paid ? `${b.f.name} voltou para "a pagar"` : `${b.f.name} marcada como paga`)
+  }
   return (
     <div className="grid">
+      <DueToday P={P} act={act} m={m} say={say} later={later} setLater={setLater} />
       <div className="wide"><Banners A={A} s={s} go={go} /></div>
       <section className="hero-card">
         <div className="ring">
@@ -295,17 +359,71 @@ function Inicio({ s, P, A, m, go }) {
           </svg>
           <div><small>Hoje você pode gastar</small><p className="big">{s.hide ? 'R$ •••' : brl(day)}</p></div>
         </div>
-        <p className="muted">{P.daysLeft} {P.daysLeft === 1 ? 'dia' : 'dias'} até o salário ({P.end.toLocaleDateString('pt-BR')}). Limite por dia: {m(P.perDay)}. Disponível no ciclo: {m(P.daily)}.</p>
+        <div className="stats">
+          <div><small>Limite do dia</small><strong>{m(P.perDay)}</strong></div>
+          <div><small>Já gastou hoje</small><strong>{m(P.todayAll)}</strong></div>
+          <div><small>Disponível no ciclo</small><strong>{m(P.daily)}</strong></div>
+        </div>
+        {over > 0 && <p className="neg">Você passou {m(over)} do limite de hoje. Os próximos dias ficam um pouco mais apertados.</p>}
+        {P.todayImp > 0 && <p className="tiny">Inclui {m(P.todayImp)} de imprevistos, que saem da reserva e não do limite do dia.</p>}
+        <p className="muted">{P.daysLeft} {P.daysLeft === 1 ? 'dia' : 'dias'} até o salário ({P.end.toLocaleDateString('pt-BR')}).</p>
       </section>
       <section>
         <h2>Para onde vai seu salário</h2>
         <div className="bar">{Object.entries(LEVELS).map(([k, l]) => P.split[k] > 0 && <i key={k} style={{ flex: P.split[k], background: l.color }} title={l.label} />)}</div>
         <ul className="legend">{Object.entries(LEVELS).map(([k, l]) => <li key={k}><b style={{ background: l.color }} />{l.label} <span>{m(P.split[k])}</span></li>)}</ul>
+        {s.variable && P.canVar && <p className="tiny">Renda considerada neste ciclo: {m(P.salary)} (recebido até agora: {m(P.earned)}).</p>}
         {s.salary > 0 && P.livreVar < 0 && (
           <p className="warn">O plano não fecha: faltam {m(-P.livreVar)} por mês. {P.eta ? `Com o que sobra (${m(P.free)}/mês), você chega nos objetivos em ${P.eta.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' })}.` : 'Reduza gastos ou a reserva para abrir espaço.'}</p>
         )}
       </section>
       <Ciclo s={s} P={P} m={m} />
+      <section className="wide">
+        <h2>Metas</h2>
+        {goals.length === 0 ? <p className="muted">Você ainda não criou um objetivo.</p> : goals.map(g => (
+          <div className="gl" key={g.id}>
+            <div className="head"><span>{g.name || 'Objetivo'}</span><span>{g.pct.toFixed(0)}%</span></div>
+            <div className="track"><i style={{ width: `${g.pct}%`, background: 'var(--obj)' }} /></div>
+            <p className="tiny">
+              {m(g.saved)} de {m(g.target)}
+              {g.left === 0 ? ' · meta batida' : g.months ? ` · guardar ${m(g.need)} por mês · neste ciclo já guardou ${m(g.dep)}` : ''}
+            </p>
+          </div>
+        ))}
+        <button className="ghost" onClick={() => go('meta')}>{goals.length ? 'Guardar ou editar metas' : 'Criar objetivo'}</button>
+      </section>
+      <section>
+        <h2>Contas do ciclo</h2>
+        {P.bills.length === 0 ? <p className="muted">Cadastre seus gastos fixos no Plano para acompanhar os vencimentos.</p> : (
+          <>
+            <p className="muted">Pago {m(billsPaid)} de {m(billsTotal)}</p>
+            <ul className="list">
+              {P.bills.map(b => (
+                <li key={b.f.id} style={{ flexWrap: 'wrap' }}>
+                  <b style={{ background: LEVELS[b.f.level].color }} />
+                  <span>{b.f.name} · {m(b.f.value)}<small>{b.due ? `vence dia ${dm(toISO(b.due))}` : 'sem dia de vencimento'}</small></span>
+                  <span className={`st ${b.paid ? 'good' : b.n !== null && b.n < 0 ? 'neg' : 'muted'}`}>{b.paid ? '✓ paga' : b.n === null ? '' : b.n < 0 ? 'atrasada' : when(b.n)}</span>
+                  <button className="ghost mini" onClick={() => toggle(b)}>{b.paid ? 'Desfazer' : 'Paguei'}</button>
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+      </section>
+      <section>
+        <h2>Últimos gastos</h2>
+        <ul className="list">
+          {recent.length === 0 && <li className="muted">Nenhum gasto registrado ainda.</li>}
+          {recent.map(x => (
+            <li key={x.id}>
+              <b style={{ background: (LEVELS[x.bucket] || LEVELS.essencial).color }} />
+              <span>{x.desc || (LEVELS[x.bucket] || LEVELS.essencial).label}<small>{dm(x.date)}</small></span>
+              <em>{m(x.value)}</em>
+            </li>
+          ))}
+        </ul>
+        <button className="ghost" onClick={() => go('gastos')}>Ver calendário de gastos</button>
+      </section>
       <section className="wide">
         <h2>Conquistas</h2>
         <ul className="badges">{badges.map(([l, got]) => <li key={l} className={got ? 'got' : ''}>{got ? '✓' : '○'} {l}</li>)}</ul>
@@ -314,44 +432,130 @@ function Inicio({ s, P, A, m, go }) {
   )
 }
 
-function Gastos({ s, act, P, m, say }) {
-  const [f, setF] = useState({ desc: '', value: 0, bucket: 'essencial' })
+function Gastos({ s, act, P, m, say, later, setLater }) {
+  const todayISO = toISO(P.today)
+  const [f, setF] = useState({ desc: '', value: 0, bucket: 'essencial', date: todayISO })
   const [busy, setBusy] = useState(false)
+  const [off, setOff] = useState(0) // 0 = ciclo atual, 1 = ciclo anterior...
+  const [sel, setSel] = useState(todayISO)
   // "Ganho do dia" só aparece se a pessoa marcou renda variável no Plano (e o plano permite).
   const varOn = s.variable && P.canVar
+
+  const C = cycleAt(P, s.payDay, off)
+  const a0 = toISO(C.start), b0 = toISO(C.end)
+  const days = Array.from({ length: Math.max(0, diff(C.start, C.end)) }, (_, i) => new Date(C.start.getFullYear(), C.start.getMonth(), C.start.getDate() + i))
+  const selDay = sel >= a0 && sel < b0 ? sel : off === 0 ? todayISO : a0
+
+  // Gastos agrupados por dia
+  const byDay = {}
+  s.spends.filter(x => x.date >= a0 && x.date < b0).forEach(x => {
+    const r = byDay[x.date] || (byDay[x.date] = { total: 0, items: [], buckets: [] })
+    r.total += x.value; r.items.push(x)
+    if (!r.buckets.includes(x.bucket)) r.buckets.push(x.bucket)
+  })
+  // Contas fixas que vencem em cada dia deste ciclo
+  const dueByDay = {}
+  s.fixed.forEach(fx => {
+    const d = dueIn(fx.day, C.start, C.end)
+    if (!d) return
+    const paid = (s.paid || []).some(p => p.fixedId === fx.id && p.cycle === a0)
+    ;(dueByDay[toISO(d)] ||= []).push({ fx, paid })
+  })
+  const byBucket = k => Object.values(byDay).reduce((a, r) => a + r.items.filter(x => x.bucket === k).reduce((t, x) => t + x.value, 0), 0)
+  const totalCycle = Object.values(byDay).reduce((a, r) => a + r.total, 0)
+
+  const compact = n => (n >= 1000 ? `${(n / 1000).toFixed(1).replace('.', ',')}k` : String(Math.round(n)))
+  const pick = k => { setSel(k); setF(v => ({ ...v, date: k })) }
+  const selDate = new Date(selDay + 'T00:00')
+  const dayRow = byDay[selDay]
+  const dayBills = dueByDay[selDay] || []
+
   const add = async e => {
     e.preventDefault()
     if (!f.value || busy) return
     setBusy(true)
-    const saved = await act.addSpend({ ...f, date: toISO(new Date()) })
+    const date = f.date || todayISO
+    const saved = await act.addSpend({ ...f, date })
     setBusy(false)
-    if (saved) { setF({ desc: '', value: 0, bucket: f.bucket }); say('Gasto salvo') }
+    if (saved) {
+      setF({ desc: '', value: 0, bucket: f.bucket, date })
+      setSel(date)
+      if (date >= toISO(P.start) && date < toISO(P.end)) setOff(0)
+      say('Gasto salvo')
+    }
+  }
+  const togglePaid = async ({ fx, paid }) => {
+    const ok = paid ? await act.unpayFixed(fx.id, a0) : await act.payFixed(fx.id, a0)
+    if (ok) say(paid ? `${fx.name} voltou para "a pagar"` : `${fx.name} marcada como paga`)
   }
   return (
     <div className="grid">
+      <DueToday P={P} act={act} m={m} say={say} later={later} setLater={setLater} />
       <section>
         <h2>Registrar gasto</h2>
         <form onSubmit={add} className="form">
           <div className="seg">{['essencial', 'imprevisto', 'livre'].map(k => <button type="button" key={k} className={f.bucket === k ? 'on' : ''} onClick={() => setF({ ...f, bucket: k })}><b style={{ background: LEVELS[k].color }} />{LEVELS[k].label}</button>)}</div>
           <input placeholder="O que foi?" value={f.desc} onChange={e => setF({ ...f, desc: e.target.value })} />
-          <Num placeholder="Valor" value={f.value} onChange={v => setF({ ...f, value: v })} />
+          <Num placeholder="Valor (ex.: 25,90)" aria-label="Valor" value={f.value} onChange={v => setF({ ...f, value: v })} />
+          <input type="date" aria-label="Dia do gasto" value={f.date} onChange={e => setF({ ...f, date: e.target.value })} />
           <button className="cta" disabled={busy}>{busy ? 'Salvando…' : 'Registrar'}</button>
         </form>
       </section>
-      {varOn && <Ganhos s={s} act={act} P={P} m={m} say={say} />}
       <section>
-        <h2>Neste ciclo</h2>
-        <ul className="list">
-          {P.cyc.length === 0 && <li className="muted">Nenhum gasto neste ciclo ainda.</li>}
-          {P.cyc.map(x => (
-            <li key={x.id}>
-              <b style={{ background: LEVELS[x.bucket].color }} />
-              <span>{x.desc || LEVELS[x.bucket].label}<small>{x.date.slice(8)}/{x.date.slice(5, 7)}</small></span>
-              <em>{m(x.value)}</em>
-              <button className="x" aria-label="Remover" onClick={() => act.removeSpend(x.id)}>×</button>
-            </li>
-          ))}
+        <h2>{off === 0 ? 'Neste ciclo' : 'Ciclo anterior'}</h2>
+        <p className="big">{m(totalCycle)}</p>
+        <ul className="legend">
+          {['essencial', 'imprevisto', 'livre'].map(k => <li key={k}><b style={{ background: LEVELS[k].color }} />{LEVELS[k].label} <span>{m(byBucket(k))}</span></li>)}
         </ul>
+      </section>
+      {varOn && <Ganhos s={s} act={act} P={P} m={m} say={say} />}
+      <section className="wide">
+        <div className="cd-nav">
+          <button className="ghost mini" aria-label="Ciclo anterior" onClick={() => setOff(off + 1)} disabled={off >= 12}>‹</button>
+          <h2>{C.start.toLocaleDateString('pt-BR', { day: '2-digit', month: 'short' })} a {new Date(C.end.getFullYear(), C.end.getMonth(), C.end.getDate() - 1).toLocaleDateString('pt-BR', { day: '2-digit', month: 'short' })}</h2>
+          <button className="ghost mini" aria-label="Próximo ciclo" onClick={() => setOff(off - 1)} disabled={off === 0}>›</button>
+        </div>
+        <div className="cal-h" aria-hidden="true">{['D', 'S', 'T', 'Q', 'Q', 'S', 'S'].map((d, i) => <span key={i}>{d}</span>)}</div>
+        <div className="cal-g">
+          {Array.from({ length: C.start.getDay() }).map((_, i) => <i key={'b' + i} />)}
+          {days.map((d, i) => {
+            const k = toISO(d), r = byDay[k], due = dueByDay[k]
+            return (
+              <button type="button" key={k} onClick={() => pick(k)}
+                className={`cd${k === selDay ? ' on' : ''}${k === todayISO ? ' today' : ''}`}
+                aria-label={`${d.getDate()} de ${MES[d.getMonth()]}${r ? `, gastou ${brl(r.total)}` : ''}`}>
+                <span className="n">{d.getDate()}{(i === 0 || d.getDate() === 1) && <small>{MES[d.getMonth()]}</small>}</span>
+                <span className="v">{r ? (s.hide ? '•••' : compact(r.total)) : ''}</span>
+                <span className="cdots">
+                  {r && r.buckets.map(b => <i key={b} style={{ background: (LEVELS[b] || LEVELS.essencial).color }} />)}
+                  {due && due.some(x => !x.paid) && <i className="bill" title="Conta a pagar" />}
+                </span>
+              </button>
+            )
+          })}
+        </div>
+        <div className="cd-day">
+          <h2>{DIA[selDate.getDay()]}, {dm(selDay)}</h2>
+          <p className="muted">{dayRow ? `Gastou ${m(dayRow.total)} neste dia.` : 'Nenhum gasto neste dia.'} {f.date === selDay ? 'O formulário acima já está nesta data.' : ''}</p>
+          <ul className="list">
+            {dayBills.map(b => (
+              <li key={'bill' + b.fx.id} style={{ flexWrap: 'wrap' }}>
+                <b style={{ background: LEVELS[b.fx.level].color }} />
+                <span>{b.fx.name} · {m(b.fx.value)}<small>Conta fixa que vence neste dia</small></span>
+                <span className={`st ${b.paid ? 'good' : 'muted'}`}>{b.paid ? '✓ paga' : 'a pagar'}</span>
+                <button className="ghost mini" onClick={() => togglePaid(b)}>{b.paid ? 'Desfazer' : 'Paguei'}</button>
+              </li>
+            ))}
+            {(dayRow ? dayRow.items : []).map(x => (
+              <li key={x.id}>
+                <b style={{ background: (LEVELS[x.bucket] || LEVELS.essencial).color }} />
+                <span>{x.desc || (LEVELS[x.bucket] || LEVELS.essencial).label}<small>{(LEVELS[x.bucket] || LEVELS.essencial).label}</small></span>
+                <em>{m(x.value)}</em>
+                <button className="x" aria-label="Remover" onClick={() => act.removeSpend(x.id)}>×</button>
+              </li>
+            ))}
+          </ul>
+        </div>
       </section>
     </div>
   )
@@ -391,7 +595,7 @@ function GoalCard({ g, act, m, say }) {
       <p className="muted">{m(g.saved)} de {m(g.target)} · meta para {g.date ? new Date(g.date + 'T00:00').toLocaleDateString('pt-BR') : 'sem data'}.</p>
       <p className="muted">{monthly}</p>
       <form className="form" onSubmit={dep}>
-        <Num placeholder={g.todo > 0 ? `Sugestão: ${g.todo.toFixed(2)}` : 'Valor a guardar'} value={v} onChange={setV} />
+        <Num placeholder={g.todo > 0 ? `Sugestão: ${g.todo.toFixed(2).replace('.', ',')}` : 'Valor a guardar'} aria-label="Valor a guardar" value={v} onChange={setV} />
         <button className="cta" disabled={busy}>{busy ? 'Salvando…' : 'Guardar'}</button>
       </form>
       <button className="ghost" type="button" onClick={delay}>Adiar meta em 1 mês</button>
@@ -412,7 +616,15 @@ function GoalForm({ g, isNew, act, say, onDone }) {
     if (busy) return
     if (!(d.target > 0)) return say('Informe quanto custa o objetivo.')
     setBusy(true)
-    const saved = await act.saveGoal({ ...g, ...d })
+    let saved
+    const extra = Math.round((d.saved - g.saved) * 100) / 100
+    if (!isNew && extra > 0) {
+      // Aumentou o "já guardei": vira um depósito, para aparecer certinho no Início e no ciclo
+      saved = await act.saveGoal({ ...g, ...d, saved: g.saved })
+      if (saved) saved = await act.deposit(g.id, extra)
+    } else {
+      saved = await act.saveGoal({ ...g, ...d })
+    }
     setBusy(false)
     if (saved) { say('Objetivo salvo'); onDone?.() }
   }
@@ -459,14 +671,15 @@ function Plano({ s, act, P, say }) {
   const [n, setN] = useState({ name: '', value: 0, level: 'essencial', day: 0 })
   // Salário e limites são rascunhos: só vão para o banco ao apertar "Salvar"
   const [a, setA] = useState({ salary: s.salary, payDay: s.payDay, variable: s.variable })
-  const [b, setB] = useState({ varEss: s.varEss, reservePct: s.reservePct })
+  const [b, setB] = useState({ varEss: s.varEss })
   const [busy, setBusy] = useState('')
   useEffect(() => { setA({ salary: s.salary, payDay: s.payDay, variable: s.variable }) }, [s.salary, s.payDay, s.variable])
-  useEffect(() => { setB({ varEss: s.varEss, reservePct: s.reservePct }) }, [s.varEss, s.reservePct])
+  useEffect(() => { setB({ varEss: s.varEss }) }, [s.varEss])
 
   const saveSettings = (key, draft, msg) => async e => {
     e.preventDefault()
     if (busy) return
+    if (key === 'a' && !draft.payDay) return say('Informe o dia em que você recebe (1 a 31).')
     setBusy(key)
     const saved = await act.saveSettings(draft)
     setBusy('')
@@ -488,8 +701,8 @@ function Plano({ s, act, P, say }) {
         <form className="form" onSubmit={saveSettings('a', a, 'Salário salvo')}>
           <label className="chk"><input type="checkbox" checked={varOn} disabled={!P.canVar} onChange={e => setA({ ...a, variable: e.target.checked })} />Minha renda varia (diarista, autônomo, apps)</label>
           {!P.canVar && <p className="tiny">Renda variável faz parte do Premium e do Plus.</p>}
-          <label>{varOn ? 'Estimativa mínima do mês' : 'Valor líquido'}<Num value={a.salary} onChange={v => setA({ ...a, salary: v })} /></label>
-          <label>Dia que recebo<input type="number" min="1" max="31" value={a.payDay} onChange={e => setA({ ...a, payDay: Math.min(31, Math.max(1, +e.target.value || 1)) })} /></label>
+          <label>{varOn ? 'Estimativa mínima do mês' : 'Valor líquido'}<Num placeholder="Ex.: 2500" value={a.salary} onChange={v => setA({ ...a, salary: v })} /></label>
+          <label>Dia que recebo<Int min={1} max={31} placeholder="Ex.: 5" value={a.payDay} onChange={v => setA({ ...a, payDay: v })} /></label>
           <button className="cta" disabled={busy === 'a'}>{busy === 'a' ? 'Salvando…' : 'Salvar salário'}</button>
         </form>
       </section>
@@ -497,8 +710,8 @@ function Plano({ s, act, P, say }) {
         <h2>Gastos fixos</h2>
         <form onSubmit={add} className="form row4">
           <input placeholder="Ex.: Aluguel" value={n.name} onChange={e => setN({ ...n, name: e.target.value })} />
-          <Num placeholder="Valor" value={n.value} onChange={v => setN({ ...n, value: v })} />
-          <input type="number" min="1" max="31" placeholder="Dia do vencimento" value={n.day || ''} onChange={e => setN({ ...n, day: Math.min(31, +e.target.value || 0) })} />
+          <Num placeholder="Valor" aria-label="Valor" value={n.value} onChange={v => setN({ ...n, value: v })} />
+          <Int min={1} max={31} placeholder="Dia do vencimento" aria-label="Dia do vencimento" value={n.day} onChange={v => setN({ ...n, day: v })} />
           <select value={n.level} onChange={e => setN({ ...n, level: e.target.value })}>
             <option value="essencial">Essencial</option>
             <option value="livre">Livre (assinaturas, lazer)</option>
@@ -513,12 +726,10 @@ function Plano({ s, act, P, say }) {
             </li>
           ))}
         </ul>
-        <form className="form" onSubmit={saveSettings('b', b, 'Limites salvos')}>
-          <label>Essenciais variáveis por mês (mercado, transporte)<Num value={b.varEss} onChange={v => setB({ ...b, varEss: v })} /></label>
-          <label>Reserva de imprevistos ({b.reservePct}% do salário)
-            <input type="range" min="0" max="30" value={b.reservePct} onChange={e => setB({ ...b, reservePct: +e.target.value })} />
-          </label>
-          <button className="cta" disabled={busy === 'b'}>{busy === 'b' ? 'Salvando…' : 'Salvar limites'}</button>
+        <form className="form" onSubmit={saveSettings('b', b, 'Limite salvo')}>
+          <label>Essenciais variáveis por mês (mercado, transporte)<Num placeholder="Ex.: 600" value={b.varEss} onChange={v => setB({ ...b, varEss: v })} /></label>
+          <p className="tiny">A reserva de imprevistos ({s.reservePct}% do salário) é separada automaticamente.</p>
+          <button className="cta" disabled={busy === 'b'}>{busy === 'b' ? 'Salvando…' : 'Salvar limite'}</button>
         </form>
       </section>
     </div>

@@ -3,17 +3,12 @@ import './Ciclo.css'
 const pad = n => String(n).padStart(2, '0')
 const iso = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
 const at = (y, m, d) => new Date(y, m, Math.min(d, new Date(y, m + 1, 0).getDate()))
-// Vencimento de um gasto fixo dentro do ciclo atual
-const dueDate = (day, start) => {
-  const a = at(start.getFullYear(), start.getMonth(), day)
-  return a >= start ? a : at(start.getFullYear(), start.getMonth() + 1, day)
-}
 const COLORS = { essencial: 'var(--ess)', imprevisto: 'var(--imp)', objetivo: 'var(--obj)', livre: 'var(--liv)' }
 
-// Gasto fixo com dia de vencimento já vencido = "já saiu". Sem dia, ou ainda por vencer = "previsto".
+// Gasto fixo que a pessoa confirmou como pago = "já saiu". Ainda não confirmado = "previsto".
 export function cycleBars(s, P) {
   const fixed = level => s.fixed.filter(f => f.level === level).reduce((a, f) => {
-    const paid = f.day && dueDate(f.day, P.start) <= P.today
+    const paid = P.isPaid(f.id)
     return { paid: a.paid + (paid ? f.value : 0), next: a.next + (paid ? 0 : f.value) }
   }, { paid: 0, next: 0 })
   const dep = (s.deposits || []).filter(x => x.date >= iso(P.start) && x.date < iso(P.end)).reduce((a, x) => a + x.value, 0)

@@ -1,15 +1,56 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 const brl = n => (n || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
 const pad = n => String(n).padStart(2, '0')
-const toISO = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
-const at = (y, m, d) => new Date(y, m, Math.min(d, new Date(y, m + 1, 0).getDate()))
-const diff = (a, b) => Math.round((b - a) / 864e5)
+export const toISO = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+export const at = (y, m, d) => new Date(y, m, Math.min(d, new Date(y, m + 1, 0).getDate()))
+export const diff = (a, b) => Math.round((b - a) / 864e5)
+
+// Vencimento de uma conta fixa dentro de um ciclo [start, end). Devolve null se não tem dia.
+export const dueIn = (day, start, end) => {
+  if (!day) return null
+  const a = at(start.getFullYear(), start.getMonth(), day)
+  if (a >= start && a < end) return a
+  const b = at(start.getFullYear(), start.getMonth() + 1, day)
+  return b >= start && b < end ? b : null
+}
 const BK = { essencial: 'Essencial', imprevisto: 'Imprevistos', livre: 'Livre' }
 const DIAS = ['domingo', 'segunda', 'terça', 'quarta', 'quinta', 'sexta', 'sábado']
-const Num = ({ value, onChange, ...p }) => (
-  <input type="number" inputMode="decimal" min="0" step="0.01" value={value || ''} onChange={e => onChange(parseFloat(e.target.value) || 0)} {...p} />
-)
+// Campo de dinheiro fácil de digitar: aceita vírgula ou ponto, até 2 casas, e não "come" o que a pessoa digita.
+// (Antes, digitar "12," virava "12" na hora e não dava para escrever centavos.)
+const showNum = v => (v ? String(v).replace('.', ',') : '')
+export const Num = ({ value, onChange, ...p }) => {
+  const [t, setT] = useState(showNum(value))
+  const last = useRef(value || 0)
+  useEffect(() => {
+    if ((value || 0) !== last.current) { last.current = value || 0; setT(showNum(value)) }
+  }, [value])
+  const change = e => {
+    let x = e.target.value.replace(/[^\d.,]/g, '')
+    if (/^\d{1,3}(\.\d{3})+$/.test(x)) x = x.replace(/\./g, '')       // 1.234 colado = mil duzentos e trinta e quatro
+    else if (x.includes(',') && x.includes('.')) x = x.replace(/\./g, '') // 1.234,56
+    x = x.replace('.', ',')
+    const i = x.indexOf(',')
+    if (i >= 0) x = x.slice(0, i + 1) + x.slice(i + 1).replace(/,/g, '').slice(0, 2)
+    setT(x)
+    const n = parseFloat(x.replace(',', '.')) || 0
+    last.current = n
+    onChange(n)
+  }
+  return <input type="text" inputMode="decimal" autoComplete="off" enterKeyHint="done" value={t} onFocus={e => e.target.select()} onChange={change} {...p} />
+}
+
+// Campo de número inteiro (dia do mês etc.): deixa apagar e digitar de novo sem pular para outro valor.
+export const Int = ({ value, onChange, min = 0, max = 31, ...p }) => {
+  const [t, setT] = useState(value ? String(value) : '')
+  useEffect(() => { if ((Number(t) || 0) !== (value || 0)) setT(value ? String(value) : '') }, [value])
+  const change = e => {
+    const d = e.target.value.replace(/\D/g, '').slice(0, 2)
+    setT(d)
+    onChange(d ? Math.min(max, Math.max(min, +d)) : 0)
+  }
+  return <input type="text" inputMode="numeric" pattern="[0-9]*" autoComplete="off" value={t} onFocus={e => e.target.select()} onChange={change} onBlur={() => setT(value ? String(value) : '')} {...p} />
+}
 
 export const addMonth = d => { if (!d) return d; const x = new Date(d + 'T00:00'); return toISO(at(x.getFullYear(), x.getMonth() + 1, x.getDate())) }
 
@@ -35,7 +76,6 @@ export function controlAlerts(s, P) {
   return a
 }
 
-// Extras.jsx — troque SÓ a função `Ganhos` por esta (o resto do arquivo não muda).
 export function Ganhos({ s, act, P, m, say }) {
   const [f, setF] = useState({ date: toISO(new Date()), value: 0, desc: '' })
   const [busy, setBusy] = useState(false)
@@ -119,7 +159,14 @@ export function Relatorio({ s, P, m, go }) {
 
 // O código vem do servidor (profile.ref_code). O link usa o endereço público do site,
 // porque dentro do app de iPhone o endereço interno (capacitor://localhost) não abre para ninguém.
-export function Indique({ s, say, code }) {
+export function Indique({ s, say, code, refresh }) {
+  // Confere no servidor quantas pessoas já entraram pelo seu código (ao abrir e a cada 20 s)
+  useEffect(() => {
+    if (!refresh) return
+    refresh()
+    const t = setInterval(refresh, 20000)
+    return () => clearInterval(t)
+  }, [])
   const base = import.meta.env.VITE_PUBLIC_URL || location.origin
   const link = code ? `${base}/?ref=${code}` : ''
   const share = async () => {
@@ -133,6 +180,7 @@ export function Indique({ s, say, code }) {
         <p className="muted">Quando um amigo criar a conta com seu código, você libera o relatório personalizado.</p>
         {code ? <p className="code">{code}</p> : <p className="muted">Gerando seu código…</p>}
         <button className="cta" onClick={share} disabled={!code}>Compartilhar meu link</button>
+        {refresh && <button className="ghost" onClick={() => refresh()}>Atualizar indicações</button>}
       </section>
       <section>
         <h2>Suas indicações</h2>

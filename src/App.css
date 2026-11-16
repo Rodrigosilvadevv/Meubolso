@@ -147,3 +147,33 @@ a{color:var(--ac)}
 .boot i{width:64px;height:64px;border-radius:20px 20px 41px 20px;background:linear-gradient(135deg,var(--ac),var(--ac2));animation:pulse 1.2s ease-in-out infinite}
 .boot span{font-family:'Bricolage Grotesque',system-ui,sans-serif;font-weight:800;font-size:1.2rem;color:var(--mu)}
 @keyframes pulse{0%,100%{transform:scale(.8);opacity:.75}50%{transform:scale(1.15);opacity:1}}
+
+/* ---- Início: hoje, contas, metas ---- */
+.stats{display:flex;gap:20px;flex-wrap:wrap;margin:8px 0 12px}
+.stats strong{display:block;font-family:'Bricolage Grotesque',system-ui,sans-serif;font-size:1.15rem;font-weight:700}
+.due{border-color:var(--imp)}
+.due li{flex-wrap:wrap;gap:8px}
+.due li>span{min-width:180px}
+.mini{padding:7px 12px;margin:0;font-size:.85rem;border-radius:10px}
+.cta.mini{padding:8px 14px}
+.gl{margin:14px 0}
+.gl .head{display:flex;justify-content:space-between;gap:8px;margin-bottom:6px;font-weight:600}
+.st{font-size:.8rem;font-weight:600;white-space:nowrap}
+
+/* ---- Gastos: calendário ---- */
+.cd-nav{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:12px}
+.cd-nav h2{margin:0;text-align:center;flex:1}
+.cd-nav button:disabled{opacity:.35;cursor:not-allowed}
+.cal-h,.cal-g{display:grid;grid-template-columns:repeat(7,1fr);gap:5px}
+.cal-h span{text-align:center;color:var(--mu);font-size:.75rem;padding-bottom:4px}
+.cd{min-height:60px;border:1px solid var(--line);border-radius:12px;background:var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:space-between;padding:5px 2px;font-size:.85rem}
+.cd.today{border-color:var(--ac)}
+.cd.on{background:var(--card);box-shadow:0 0 0 2px var(--ac)}
+.cd .n{font-weight:600;line-height:1;display:flex;flex-direction:column;align-items:center}
+.cd .n small{font-size:.6rem;font-weight:400;line-height:1.1}
+.cd .v{font-size:.68rem;font-weight:600}
+.cd .cdots{display:flex;gap:2px;height:6px;align-items:center}
+.cd .cdots i{width:5px;height:5px;border-radius:50%}
+.cd .cdots i.bill{border-radius:1px;background:var(--imp)}
+.cd-day{margin-top:16px;border-top:1px solid var(--line);padding-top:14px}
+.cd-day h2{margin-bottom:4px}

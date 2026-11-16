@@ -48,6 +48,16 @@ export const parseRef = code => {
   return match ? match[1] : clean
 }
 
+// Link de indicação (?ref=CODIGO): guarda o código no aparelho até a pessoa criar a conta / entrar.
+// Quando ela entra, o código é enviado ao servidor e apagado daqui (ver useCloud).
+;(() => {
+  try {
+    const r = new URLSearchParams(window.location.search).get('ref')
+    const c = r && parseRef(r)
+    if (c) localStorage.setItem('bolso:ref', c)
+  } catch {}
+})()
+
 // Nome guardado no cadastro (metadata do usuário no Supabase Auth)
 const nameOf = u => u?.user_metadata?.name || u?.user_metadata?.full_name || ''
 
@@ -273,16 +283,31 @@ export function useCloud() {
     }
     const r = await claimRef(c)
     if (!r.error || r.final) refClear()
+    if (!r.error) await fetchProfile(user.id, user) // o código pode ter liberado dias grátis
     return r.error ? { error: r.error } : {}
   }
 
-  // Quem criou a conta por um link de indicação: assim que entra, o código vai para o servidor
+  // Quem criou a conta por um link de indicação: assim que entra (e o perfil já existe),
+  // o código vai para o servidor. Se falhar por rede/perfil ainda não criado, tenta de novo.
   useEffect(() => {
-    if (!user) return
+    if (!user || !profReady) return
     const c = refGet()
     if (!c) return
-    claimRef(c).then(r => { if (!r.error || r.final) refClear() }).catch(() => {})
-  }, [user?.id])
+    let dead = false
+    ;(async () => {
+      for (let i = 0; i < 4 && !dead; i++) {
+        let r
+        try { r = await claimRef(c) } catch { r = { error: 'rede' } }
+        if (!r.error || r.final) {
+          refClear()
+          if (!r.error && !dead) fetchProfile(user.id, user)
+          return
+        }
+        await sleep(2000 * (i + 1))
+      }
+    })()
+    return () => { dead = true }
+  }, [user?.id, profReady])
 
   const logout = async () => {
     try { await makeRemovePushToken(sb)(user) } catch {}

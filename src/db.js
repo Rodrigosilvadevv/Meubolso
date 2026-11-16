@@ -21,7 +21,7 @@ const newId = () => (lastId = Math.max(Date.now(), lastId + 1))
 
 export const EMPTY = {
   salary: 0, payDay: 5, fixed: [], varEss: 0, reservePct: 10,
-  goals: [], deposits: [], spends: [], variable: false, earns: [],
+  goals: [], deposits: [], spends: [], variable: false, earns: [], paid: [],
   refs: 0, hue: 172, mode: 'dark', hide: false, notifDay: '',
 }
 
@@ -89,7 +89,17 @@ const fetchAll = async (table, uid) => {
   return out
 }
 
-const countRefs = async () => {
+// Contas fixas que a pessoa confirmou como pagas, por ciclo (tabela bolso_paid).
+// Se a tabela ainda não existir, o app continua funcionando e só mostra tudo como "não pago".
+const fetchPaid = async uid => {
+  try {
+    const { data, error } = await sb.from('bolso_paid').select('fixed_id,cycle_start').eq('user_id', uid)
+    if (error) { console.warn('bolso_paid:', error.message); return [] }
+    return (data || []).map(r => ({ fixedId: Number(r.fixed_id), cycle: String(r.cycle_start).slice(0, 10) }))
+  } catch (e) { console.warn('bolso_paid:', e?.message); return [] }
+}
+
+export const countRefs = async () => {
   try {
     const { count, error } = await sb.from('bolso_referrals').select('id', { count: 'exact', head: true })
     return error || count == null ? 0 : count
@@ -106,6 +116,7 @@ export const bootstrap = async uid => {
     data[n] = COLL[n].newestFirst ? rows.reverse() : rows
   })
   data.refs = await countRefs()
+  data.paid = await fetchPaid(uid)
   return data
 }
 
@@ -138,7 +149,20 @@ export const makeActions = ({ get, set, uid, fail }) => {
       set(v => ({ ...v, ...fromSettings(d) }))
     }),
     addFixed: guard(item => insert('fixed', item)),
-    removeFixed: guard(id => remove('fixed', id)),
+    removeFixed: guard(async id => {
+      await remove('fixed', id)
+      try { await sb.from('bolso_paid').delete().eq('user_id', me()).eq('fixed_id', id) } catch {}
+      set(v => ({ ...v, paid: (v.paid || []).filter(p => p.fixedId !== id) }))
+    }),
+    // confirma que a conta fixa do ciclo (cycle = dia de início do ciclo, AAAA-MM-DD) foi paga
+    payFixed: guard(async (fixedId, cycle) => {
+      await db(sb.from('bolso_paid').upsert({ user_id: me(), fixed_id: fixedId, cycle_start: cycle, paid_at: stamp() }, { onConflict: 'user_id,fixed_id,cycle_start' }).select(), 'bolso_paid')
+      set(v => ({ ...v, paid: [...(v.paid || []).filter(p => !(p.fixedId === fixedId && p.cycle === cycle)), { fixedId, cycle }] }))
+    }),
+    unpayFixed: guard(async (fixedId, cycle) => {
+      await db(sb.from('bolso_paid').delete().eq('user_id', me()).eq('fixed_id', fixedId).eq('cycle_start', cycle), 'bolso_paid')
+      set(v => ({ ...v, paid: (v.paid || []).filter(p => !(p.fixedId === fixedId && p.cycle === cycle)) }))
+    }),
     addSpend: guard(item => insert('spends', item)),
     removeSpend: guard(id => remove('spends', id)),
     addEarn: guard(item => insert('earns', item)),
@@ -216,7 +240,7 @@ export function usePushState(uid, ready, s, P) {
 }
 
 // ---------- Hook usado pelo App ----------
-// Devolve { s, phase, err, act, reload }. phase: loading | ready | error
+// Devolve { s, phase, err, act, reload, refreshRefs }. phase: loading | ready | error
 export function useStore(uid, enabled, onError) {
   const [s, setS] = useState(EMPTY)
   const [phase, setPhase] = useState('loading')
@@ -257,12 +281,15 @@ export function useStore(uid, enabled, onError) {
     load()
   }, [enabled, uid, load])
 
-  // Quantas pessoas a pessoa indicou (libera o relatório personalizado): atualiza ao voltar para o app
+  // Quantas pessoas a pessoa indicou (libera o relatório personalizado)
+  const refreshRefs = useCallback(
+    () => countRefs().then(n => setS(v => (v.refs === n ? v : { ...v, refs: n }))).catch(() => {}),
+    [],
+  )
+  // atualiza ao voltar para o app
   useEffect(() => {
     if (phase !== 'ready') return
-    const vis = () => {
-      if (document.visibilityState === 'visible') countRefs().then(n => setS(v => (v.refs === n ? v : { ...v, refs: n })))
-    }
+    const vis = () => { if (document.visibilityState === 'visible') refreshRefs() }
     document.addEventListener('visibilitychange', vis)
     return () => document.removeEventListener('visibilitychange', vis)
   }, [phase])
@@ -272,5 +299,5 @@ export function useStore(uid, enabled, onError) {
     [],
   )
 
-  return { s, phase, err, act, reload: load }
+  return { s, phase, err, act, reload: load, refreshRefs }
 }
