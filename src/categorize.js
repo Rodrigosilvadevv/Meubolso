@@ -61,7 +61,7 @@ export const bucketOf = categoryId => PILLARS[CAT_BY_ID[categoryId]?.pillar]?.bu
 
 // "UBER *TRIP", "Uber  Trip" e "uber trip" viram a mesma coisa
 export const normalizeText = t =>
-  String(t ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
+  String(t ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
 
 // Dicionário compilado uma vez. Palavra mais longa primeiro: "aluguel de carro" ganha de "aluguel",
 // "uber trip" ganha de "uber", "farmacia de emergencia" ganha de "farmacia".

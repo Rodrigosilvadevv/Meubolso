@@ -30,8 +30,8 @@ export function initPurchases(userId) {
   const prev = current || Promise.resolve()
   current = prev.catch(() => {}).then(async () => {
     if (!configured) {
-      // Logs detalhados no console do Xcode. Pode remover depois que funcionar.
-      await Purchases.setLogLevel({ level: LOG_LEVEL.DEBUG })
+      // Logs detalhados só em desenvolvimento
+      await Purchases.setLogLevel({ level: import.meta.env.DEV ? LOG_LEVEL.DEBUG : LOG_LEVEL.WARN })
       await Purchases.configure({ apiKey, appUserID: userId || undefined })
       configured = true
       currentUser = userId || null
@@ -96,10 +96,13 @@ export async function watchPurchases(cb) {
     const listener = await Purchases.addCustomerInfoUpdateListener(info => cb(info))
     return () => {
       try {
+        // Dependendo da versão do plugin, o retorno é um objeto com remove(), com id, ou só o texto do id.
+        // Antes o caso "texto" não era tratado e o listener nunca era removido.
+        const id = typeof listener === 'string' ? listener : listener?.id
         if (listener && typeof listener.remove === 'function') {
           listener.remove()
-        } else if (listener?.id) {
-          Purchases.removeCustomerInfoUpdateListener({ listenerToRemove: listener.id })
+        } else if (id) {
+          Promise.resolve(Purchases.removeCustomerInfoUpdateListener({ listenerToRemove: id })).catch(() => {})
         }
       } catch {}
     }

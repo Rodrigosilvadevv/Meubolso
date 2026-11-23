@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { sb, oauth, signUpPhone, signInPhone, enablePush, isPlus, parseRef } from './cloud'
+import { sb, oauth, signUpPhone, signInPhone, enablePush, isPaid, parseRef } from './cloud'
 import { isNative } from './nativeAuth.js'
 import NomeEditor from './NomeEditor.jsx'
 import { getPrices, manageSubscription } from './purchases'
@@ -178,32 +178,45 @@ export function Paywall({ cloud }) {
   )
 }
 
+// As 60 mensagens MAIS NOVAS, da mais antiga para a mais nova.
+// Antes pegava as 60 mais antigas: depois da mensagem 60 a conversa parava de aparecer.
+const fetchMsgs = async ch => {
+  const { data } = await sb.from('bolso_messages').select('role,body,id').eq('channel', ch).order('created_at', { ascending: false }).limit(60)
+  return (data || []).reverse()
+}
+
 export function Chat({ s, P, cloud, say }) {
-  const plus = isPlus(cloud.profile)
+  // O assistente de IA é só do Premium Plus (antes o Premium comum também via o chat liberado)
+  const plus = P.tier === 'plus'
   const [ch, setCh] = useState('admin')
   const [msgs, setMsgs] = useState([])
   const [t, setT] = useState('')
   const [busy, setBusy] = useState(false)
-  const load = async () => {
-    const { data } = await sb.from('bolso_messages').select('role,body,id').eq('channel', ch).order('created_at').limit(60)
-    setMsgs(data || [])
-  }
-  useEffect(() => { load() }, [ch])
+  const load = async () => setMsgs(await fetchMsgs(ch))
+  useEffect(() => {
+    let dead = false
+    setMsgs([])
+    fetchMsgs(ch).then(d => { if (!dead) setMsgs(d) }).catch(() => {})
+    return () => { dead = true }
+  }, [ch])
   const send = async e => {
     e.preventDefault()
     const text = t.trim()
     if (!text || busy) return
     setT('')
     setBusy(true)
+    setMsgs(m => [...m, { id: 'tmp' + Date.now(), role: 'user', body: text }])
+    let failed = false
     if (ch === 'admin') {
       const { error } = await sb.from('bolso_messages').insert({ user_id: cloud.user.id, channel: 'admin', role: 'user', body: text })
-      if (error) say('Não foi possível enviar agora.')
+      if (error) { failed = true; say('Não foi possível enviar agora.') }
     } else {
-      const summary = `Renda do ciclo R$ ${Math.round(s.variable && P.canVar ? P.earned : s.salary)}; pode gastar hoje R$ ${Math.round(P.daily / P.daysLeft)}; faltam ${P.daysLeft} dias para receber; plano ${P.livreVar < 0 ? 'apertado' : 'fechando'}.`
+      const summary = `Renda do ciclo R$ ${Math.round(s.variable && P.canVar ? P.earned : s.salary)}; pode gastar hoje R$ ${Math.round(P.todayLeft)}; faltam ${P.daysLeft} dias para receber; plano ${P.livreVar < 0 ? 'apertado' : 'fechando'}.`
       const { error } = await sb.functions.invoke('bolso-ai-chat', { body: { text, summary } })
       if (error) say('O assistente não respondeu agora. Tente em instantes.')
     }
-    await load()
+    try { await load() } catch {}
+    if (failed) setT(text) // devolve o texto para a pessoa tentar de novo
     setBusy(false)
   }
   return (
@@ -271,7 +284,7 @@ export function Visual({ s, set, say, onExit, live, setLive }) {
   )
 }
 
-const NAMES = { free: 'Gratuito', premium: 'Premium', plus: 'Premium Plus' }
+const NAMES = { free: 'Gratuito', trial: 'Mês grátis', premium: 'Premium', plus: 'Premium Plus' }
 
 function Perfil({ cloud, say, P }) {
   const p = cloud.profile
@@ -280,7 +293,7 @@ function Perfil({ cloud, say, P }) {
   const [busy, setBusy] = useState('')
   useEffect(() => { getPrices().then(setPrices).catch(() => {}) }, [])
 
-  const paid = p?.plan === 'premium' || p?.plan === 'plus'
+  const paid = isPaid(p)
   const left = p?.trial_until ? Math.ceil((new Date(p.trial_until) - Date.now()) / 864e5) : 0
   const until = p?.plan_until ? new Date(p.plan_until).toLocaleDateString('pt-BR') : ''
 
@@ -319,7 +332,7 @@ function Perfil({ cloud, say, P }) {
 
       <section className="hero-card">
         <h2>Meu plano</h2>
-        <p className="big">{NAMES[paid ? p.plan : 'free']}</p>
+        <p className="big">{NAMES[paid ? p.plan : left > 0 ? 'trial' : 'free']}</p>
         <p className="muted">
           {paid ? (until ? `Renova em ${until}` : 'Assinatura ativa')
             : left > 0 ? `Mês grátis: ${left} ${left === 1 ? 'dia' : 'dias'} restantes` : 'Sem plano ativo'}

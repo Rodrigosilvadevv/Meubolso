@@ -167,11 +167,17 @@ export function Indique({ s, say, code, refresh }) {
     const t = setInterval(refresh, 20000)
     return () => clearInterval(t)
   }, [])
-  const base = import.meta.env.VITE_PUBLIC_URL || location.origin
-  const link = code ? `${base}/?ref=${code}` : ''
+  // Dentro do app de iPhone o endereço é capacitor://localhost, que não abre para ninguém.
+  // Sem VITE_PUBLIC_URL, compartilha só o código em texto em vez de um link quebrado.
+  const base = import.meta.env.VITE_PUBLIC_URL || (/^https?:/.test(location.origin) ? location.origin : '')
+  const link = code && base ? `${base}/?ref=${code}` : ''
   const share = async () => {
-    if (!link) return
-    try { if (navigator.share) await navigator.share({ title: 'Meu bolso', text: 'Organize seu dinheiro com o Meu bolso', url: link }); else { await navigator.clipboard.writeText(link); say('Link copiado') } } catch {}
+    if (!code) return
+    const text = link ? 'Organize seu dinheiro com o Meu bolso' : `Organize seu dinheiro com o Meu bolso. Use meu código ao criar a conta: ${code}`
+    try {
+      if (navigator.share) await navigator.share({ title: 'Meu bolso', text, ...(link ? { url: link } : {}) })
+      else { await navigator.clipboard.writeText(link || text); say(link ? 'Link copiado' : 'Texto copiado') }
+    } catch {}
   }
   return (
     <div className="grid">
@@ -179,7 +185,7 @@ export function Indique({ s, say, code, refresh }) {
         <h2>Indique um amigo</h2>
         <p className="muted">Quando um amigo criar a conta com seu código, você libera o relatório personalizado.</p>
         {code ? <p className="code">{code}</p> : <p className="muted">Gerando seu código…</p>}
-        <button className="cta" onClick={share} disabled={!code}>Compartilhar meu link</button>
+        <button className="cta" onClick={share} disabled={!code}>{link ? 'Compartilhar meu link' : 'Compartilhar meu código'}</button>
         {refresh && <button className="ghost" onClick={() => refresh()}>Atualizar indicações</button>}
       </section>
       <section>

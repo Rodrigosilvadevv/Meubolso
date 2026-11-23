@@ -177,13 +177,24 @@ export const makeActions = ({ get, set, uid, fail }) => {
     list(name, l => l.filter(x => x.id !== id))
   }
 
+  // Salvamentos de configurações entram numa fila. Sem isso, dois toques rápidos (ex.: tema e cor)
+  // liam o estado antigo e um apagava a mudança do outro.
+  let queue = Promise.resolve(), inflight = 0, lastSaved = null
+  const saveSettingsNow = guard(async patch => {
+    const next = { ...get(), ...(lastSaved || {}), ...patch }
+    const d = await db(sb.from('bolso_settings').upsert({ user_id: me(), ...settingsRow(next), updated_at: stamp() }, { onConflict: 'user_id' }).select().single(), 'bolso_settings')
+    lastSaved = fromSettings(d)
+    set(v => ({ ...v, ...lastSaved }))
+  })
+
   return {
     // salário, dia de receber, essenciais, reserva, renda variável, cor, tema, ocultar valores, aviso do dia
-    saveSettings: guard(async patch => {
-      const next = { ...get(), ...patch }
-      const d = await db(sb.from('bolso_settings').upsert({ user_id: me(), ...settingsRow(next), updated_at: stamp() }, { onConflict: 'user_id' }).select().single(), 'bolso_settings')
-      set(v => ({ ...v, ...fromSettings(d) }))
-    }),
+    saveSettings: patch => {
+      inflight++
+      const run = queue.then(() => saveSettingsNow(patch)).then(ok => { if (--inflight === 0) lastSaved = null; return ok })
+      queue = run
+      return run
+    },
     addFixed: guard(item => insert('fixed', item)),
     removeFixed: guard(async id => {
       await remove('fixed', id)

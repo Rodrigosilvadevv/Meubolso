@@ -173,7 +173,8 @@ function Main() {
   const [later, setLater] = useState([]) // contas em que a pessoa tocou "ainda não" (só nesta sessão)
   const [liveHue, setLiveHue] = useState(null) // cor em pré-visualização enquanto a barra é arrastada (ainda não salva)
   const [dayKey, setDayKey] = useState(() => toISO(new Date()))
-  const say = (t, ms = 3200) => { setToast(t); setTimeout(() => setToast(''), ms) }
+  const toastTimer = useRef(0)
+  const say = (t, ms = 3200) => { setToast(t); clearTimeout(toastTimer.current); toastTimer.current = setTimeout(() => setToast(''), ms) }
 
   // Se o app ficar aberto de um dia para o outro, "hoje" e o limite do dia se renovam sozinhos.
   useEffect(() => {
@@ -211,7 +212,7 @@ function Main() {
     if (phase !== 'ready' || !A[0] || !('Notification' in window) || Notification.permission !== 'granted') return
     const day = toISO(P.today)
     if (s.notifDay === day) return
-    new Notification('Meu bolso', { body: A[0].title })
+    try { new Notification('Meu bolso', { body: A[0].title }) } catch {} // alguns navegadores não deixam criar aviso direto
     act.saveSettings({ notifDay: day })
   }, [phase])
 
@@ -243,7 +244,8 @@ function Main() {
     )
   }
 
-  const first = (cloud.profile?.name || 'Você').split(' ')[0], hr = new Date().getHours()
+  // Nome com espaço no começo ou só espaços derrubava a tela (first[0] indefinido)
+  const first = (cloud.profile?.name || '').trim().split(/\s+/)[0] || 'Você', hr = new Date().getHours()
   const props = { s, act, P, A, m, go, say, later, setLater, refresh: store.refreshRefs, uid: cloud.user?.id, set: act.saveSettings, liveHue, setLiveHue }
   return (
     <div className={cls} style={sty}>
@@ -343,7 +345,8 @@ function Inicio({ s, act, P, A, m, go, say, later, setLater }) {
   const over = Math.max(0, P.todaySpent - P.perDay)
   const gp = P.goals.reduce((a, g) => Math.max(a, g.pct), 0)
   const goals = P.goals.filter(g => g.target > 0)
-  const recent = s.spends.slice(0, 5)
+  // Os 5 mais recentes pela data do gasto (antes era pela ordem de cadastro: um extrato importado bagunçava a lista)
+  const recent = [...s.spends].sort((a, b) => b.date.localeCompare(a.date) || b.id - a.id).slice(0, 5)
   const billsTotal = P.bills.reduce((a, b) => a + b.f.value, 0)
   const billsPaid = P.bills.filter(b => b.paid).reduce((a, b) => a + b.f.value, 0)
   const badges = [['Plano criado', s.salary > 0], ['Primeiro gasto', s.spends.length > 0], ['No orçamento', s.salary > 0 && P.rem.livre >= 0 && P.rem.essencial >= 0], ['Meta 25%', gp >= 25], ['Meta 50%', gp >= 50], ['Meta batida', gp >= 100]]

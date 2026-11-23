@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { createClient } from '@supabase/supabase-js'
 import { makeOauth, makeEnablePush, makeRemovePushToken, authStorage, isNative } from './nativeAuth.js'
 import {
@@ -6,8 +6,8 @@ import {
   watchPurchases, purchasePlan, restorePurchases,
 } from './purchases'
 
-const SUPABASE_URL = 'https://xtwdxmrpnmzaxofuxbps.supabase.co'
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inh0d2R4bXJwbm16YXhvZnV4YnBzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTQ0Mzk0MjcsImV4cCI6MjExMDAxNTQyN30.inm92mdOZNF7Ig6olSr59G6qvoB7ltN2FisNypPAHHQ'
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || 'https://xtwdxmrpnmzaxofuxbps.supabase.co'
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inh0d2R4bXJwbm16YXhvZnV4YnBzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTQ0Mzk0MjcsImV4cCI6MjExMDAxNTQyN30.inm92mdOZNF7Ig6olSr59G6qvoB7ltN2FisNypPAHHQ'
 
 export const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   auth: {
@@ -28,17 +28,20 @@ export const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   } catch {}
 })()
 
-export const isPlus = profile => profile?.plan === 'premium' || profile?.plan === 'plus'
+// Plano pago só vale enquanto não venceu (plan_until vazio = sem data de término).
+// Antes, um plano dado pelo admin por 30 dias nunca expirava no app.
+const RANK = { premium: 1, plus: 2 }
+const validPlan = (plan, until) => (RANK[plan] && (!until || new Date(until) > new Date()) ? plan : null)
+
+// Tem plano pago ativo (Premium ou Plus)?
+export const isPaid = profile => !!validPlan(profile?.plan, profile?.plan_until)
 
 export const tierOf = profile => {
   if (!profile) return 'free'
-  const now = new Date()
-  const hasPlan = profile.plan === 'premium' || profile.plan === 'plus'
-  const hasTrial = profile.trial_until && new Date(profile.trial_until) > now
-  if (hasPlan || hasTrial) {
-    return profile.plan === 'plus' ? 'plus' : 'premium'
-  }
-  return 'free'
+  const plan = validPlan(profile.plan, profile.plan_until)
+  if (plan) return plan
+  // O mês grátis conta como Premium
+  return profile.trial_until && new Date(profile.trial_until) > new Date() ? 'premium' : 'free'
 }
 
 export const parseRef = code => {
@@ -127,8 +130,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms))
 
 // Plano da App Store que está salvo no banco (bolso_profiles.store_plan), se ainda valer
 const storedPlan = p => {
-  if (!p?.store_plan) return null
-  if (p.store_until && new Date(p.store_until) <= new Date()) return null
+  if (!validPlan(p?.store_plan, p?.store_until)) return null
   return { plan: p.store_plan, plan_until: p.store_until || null }
 }
 
@@ -144,12 +146,18 @@ export function useCloud() {
   const [profileErr, setProfileErr] = useState('')
   // Só decidimos entre app e tela de planos depois que o perfil foi carregado (ou falhou)
   const [profReady, setProfReady] = useState(false)
+  // Último plano da App Store que já foi enviado para o servidor conferir
+  const synced = useRef('')
 
   // Junta o perfil do banco com o plano da App Store (ao vivo, ou o último salvo no banco).
   const profile = useMemo(() => {
     if (!dbProfile && !rcPlan) return null
     const store = rcPlan?.plan ? rcPlan : storedPlan(dbProfile)
-    const p = { ...(dbProfile || {}), ...(store || {}) }
+    // Plano dado pelo admin (se ainda valer) e plano da App Store: vale o melhor dos dois
+    const manual = validPlan(dbProfile?.plan, dbProfile?.plan_until) ? { plan: dbProfile.plan, plan_until: dbProfile.plan_until || null } : null
+    const best = [manual, store && validPlan(store.plan, store.plan_until) ? store : null]
+      .filter(Boolean).sort((a, b) => RANK[b.plan] - RANK[a.plan])[0]
+    const p = { ...(dbProfile || {}), plan: best?.plan || null, plan_until: best?.plan_until || null }
     // O nome do cadastro (editável em Minha conta) vale mais que o do banco
     p.name = nameOf(user) || p.name
     return p
@@ -210,6 +218,7 @@ export function useCloud() {
         setRcPlan(null)
         setEntReady(!isNative)
         setProfReady(false)
+        synced.current = ''
         setStatus('out')
       }
     })
@@ -224,8 +233,16 @@ export function useCloud() {
     const p = planFromInfo(info)
     setRcPlan(p)
     setDbProfile(v => (v ? { ...v, store_plan: p?.plan || null, store_until: p?.plan_until || null } : v))
-    sb.rpc('bolso_save_store_plan', { p_plan: p?.plan || null, p_until: p?.plan_until || null })
-      .then(({ error }) => { if (error) console.warn('store_plan:', error.message) })
+    // Quem grava o plano no banco é o servidor, que confere a assinatura direto no RevenueCat.
+    // Antes o app chamava uma função do banco com o plano que ele mesmo escolhia: qualquer pessoa
+    // podia se dar o Plus pelo console do navegador.
+    const key = `${p?.plan || ''}|${p?.plan_until || ''}`
+    if (synced.current !== key) {
+      synced.current = key
+      sb.functions.invoke('bolso-sync-plan')
+        .then(({ error }) => { if (error) { synced.current = ''; console.warn('sync-plan:', error.message) } })
+        .catch(e => { synced.current = ''; console.warn('sync-plan:', e?.message) })
+    }
     return p
   }
 
@@ -318,6 +335,7 @@ export function useCloud() {
     setRcPlan(null)
     setEntReady(!isNative)
     setProfReady(false)
+    synced.current = ''
     setStatus('out')
   }
 

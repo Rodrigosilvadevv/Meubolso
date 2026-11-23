@@ -28,9 +28,9 @@ export default function AdminPage() {
 
   const wrap = ch => <div className="app dark" style={{ '--h': 172 }}>{ch}</div>
 
-  if (st === 'loading') return wrap(<p className="muted" style={{ padding: 40 }}>Carregando…</p>)
+  if (st === 'loading') return wrap(<p className="muted" style={{ padding: 40, gridColumn: '1 / -1' }}>Carregando…</p>)
   if (st === 'out') return wrap(
-    <main className="login">
+    <main className="login" style={{ gridTemplateColumns: '1fr' }}>
       <section className="box">
         <h2>Admin</h2>
         <form className="form" onSubmit={login}>
@@ -43,7 +43,7 @@ export default function AdminPage() {
     </main>
   )
   if (st === 'denied') return wrap(
-    <main className="login"><section className="box">
+    <main className="login" style={{ gridTemplateColumns: '1fr' }}><section className="box">
       <h2>Acesso negado</h2>
       <p className="muted">Esta conta não é de administrador.</p>
       <button className="ghost" onClick={out}>Sair</button>
@@ -55,7 +55,7 @@ export default function AdminPage() {
 function Panel({ onExit }) {
   const [tab, setTab] = useState('users')
   return (
-    <div className="main" style={{ padding: 16, maxWidth: 1000, margin: '0 auto' }}>
+    <div className="main" style={{ padding: 16, maxWidth: 1000, margin: '0 auto', gridColumn: '1 / -1' }}>
       <header><div><small>Meu bolso</small><h1>Admin</h1></div><div className="acts"><button className="ghost" onClick={onExit}>Sair</button></div></header>
       <div className="seg">{[['users', 'Usuários'], ['msgs', 'Mensagens']].map(([k, l]) => <button key={k} className={tab === k ? 'on' : ''} onClick={() => setTab(k)}>{l}</button>)}</div>
       {tab === 'users' ? <Users /> : <Msgs />}
@@ -77,7 +77,7 @@ function Users() {
     setBusy(''); if (error) setErr(error.message); else load()
   }
   const count = s => rows.filter(r => r.situacao === s).length
-  const shown = rows.filter(r => (flt === 'todos' || r.situacao === flt) && (`${r.name} ${r.email}`.toLowerCase().includes(q.toLowerCase())))
+  const shown = rows.filter(r => (flt === 'todos' || r.situacao === flt) && (`${r.name || ''} ${r.email || ''}`.toLowerCase().includes(q.toLowerCase())))
   return (
     <section className="wide" style={{ marginTop: 14 }}>
       <p className="muted">
